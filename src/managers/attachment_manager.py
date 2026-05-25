@@ -23,8 +23,7 @@ class AttachmentManager:
             raise ValueError("El archivo no existe o no es válido.")
 
         extension = source.suffix.lower()
-        allowed = {".txt", ".csv", ".pdf", ".docx", ".xlsx", ".xls"}
-        if extension not in allowed:
+        if extension not in settings.ALLOWED_EXTENSIONS:
             raise ValueError(f"Extensión no permitida: {extension}")
 
         size_bytes = source.stat().st_size
