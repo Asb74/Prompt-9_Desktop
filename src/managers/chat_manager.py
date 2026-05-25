@@ -84,6 +84,11 @@ class ChatManager:
                 should_cancel=should_cancel,
             )
             was_cancelled = bool(callable(should_cancel) and should_cancel())
+            self.logger.info(
+                "Fin send_message_streaming: cancelado=%s chars_recibidos_aprox=%s",
+                was_cancelled,
+                len(assistant_text),
+            )
             if not assistant_text:
                 if was_cancelled:
                     self.logger.info("Streaming cancelado sin contenido parcial.")
@@ -92,7 +97,6 @@ class ChatManager:
                 return self.FALLBACK_ERROR
 
             if was_cancelled:
-                assistant_text = f"{assistant_text}\n\n[Generación cancelada]"
                 self.logger.info("Streaming cancelado con contenido parcial.")
 
             self.conversation_manager.add_assistant_message(assistant_text)

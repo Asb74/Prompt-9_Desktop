@@ -59,6 +59,8 @@ class OpenAIClient:
             return ""
 
         full_text_chunks: list[str] = []
+        streamed_chars = 0
+        last_fallback_text = ""
         self.logger.info("Inicio de streaming OpenAI: model=%s mensajes=%s", model, len(messages))
         try:
             stream = self.client.responses.create(model=model, input=messages, stream=True)
@@ -72,6 +74,7 @@ class OpenAIClient:
                     delta = getattr(event, "delta", "")
                     if isinstance(delta, str) and delta:
                         full_text_chunks.append(delta)
+                        streamed_chars += len(delta)
                         on_delta(delta)
                     continue
 
@@ -86,12 +89,28 @@ class OpenAIClient:
                 # Compatibilidad defensiva ante cambios de SDK/eventos.
                 fallback_delta = getattr(event, "delta", None)
                 if isinstance(fallback_delta, str) and fallback_delta:
-                    full_text_chunks.append(fallback_delta)
-                    on_delta(fallback_delta)
+                    # Algunos SDK/eventos alternativos pueden exponer texto acumulado.
+                    # En ese caso se envía únicamente el delta nuevo.
+                    if fallback_delta.startswith(last_fallback_text):
+                        new_chunk = fallback_delta[len(last_fallback_text) :]
+                    else:
+                        new_chunk = fallback_delta
+                    last_fallback_text = fallback_delta
+                    if new_chunk:
+                        full_text_chunks.append(new_chunk)
+                        streamed_chars += len(new_chunk)
+                        on_delta(new_chunk)
+                    continue
+
+                self.logger.debug("Evento de streaming ignorado: type=%s", event_type)
         except Exception:
             self.logger.exception("Error durante streaming con OpenAI Responses API")
             raise
 
         result = "".join(full_text_chunks).strip()
-        self.logger.info("Streaming completado. Longitud de respuesta=%s", len(result))
+        self.logger.info(
+            "Streaming completado. Longitud de respuesta=%s chars_recibidos_aprox=%s",
+            len(result),
+            streamed_chars,
+        )
         return result
