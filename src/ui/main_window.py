@@ -38,7 +38,10 @@ class MainWindow:
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
+        self.session_list_items: list[dict] = []
         self.current_session_id: str | None = None
+        self.session_search_query = tk.StringVar(value="")
+        self.session_date_filter = tk.StringVar(value="Todas")
         self._partial_message_active = False
         self.partial_message_start_index: str | None = None
         self.partial_message_body_index: str | None = None
@@ -79,6 +82,24 @@ class MainWindow:
         sidebar.grid_propagate(False)
 
         ttk.Label(sidebar, text="Sesiones", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        search_entry = ttk.Entry(sidebar, textvariable=self.session_search_query)
+        search_entry.pack(fill=tk.X, pady=(8, 6))
+        search_entry.bind("<Return>", self._on_search_enter)
+
+        self.date_filter_combobox = ttk.Combobox(
+            sidebar,
+            textvariable=self.session_date_filter,
+            values=["Todas", "Hoy", "Esta semana", "Este mes"],
+            state="readonly",
+        )
+        self.date_filter_combobox.pack(fill=tk.X, pady=(0, 6))
+        self.date_filter_combobox.bind("<<ComboboxSelected>>", self._on_filter_changed)
+
+        search_actions = ttk.Frame(sidebar)
+        search_actions.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(search_actions, text="Buscar", command=self._apply_session_filters).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        ttk.Button(search_actions, text="Limpiar", command=self._clear_session_filters).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
         ttk.Button(sidebar, text="Nueva sesión", command=self._new_session).pack(fill=tk.X, pady=(8, 6))
         ttk.Button(sidebar, text="Renombrar", command=self._rename_session).pack(fill=tk.X, pady=(0, 6))
         ttk.Button(sidebar, text="Eliminar", command=self._delete_session).pack(fill=tk.X, pady=(0, 8))
@@ -346,10 +367,62 @@ class MainWindow:
             self.session_order.append(session_id)
 
     def _refresh_session_listbox(self) -> None:
+        previous = self.current_session_id
+        mapped_filter = {
+            "Todas": "all",
+            "Hoy": "today",
+            "Esta semana": "week",
+            "Este mes": "month",
+        }
+        filter_key = mapped_filter.get(self.session_date_filter.get(), "all")
+        query = self.session_search_query.get().strip()
+        results = self.session_repository.search_sessions(query=query, date_filter=filter_key)
+        self.session_list_items = results
+
         self.session_listbox.delete(0, tk.END)
-        for session_id in self.session_order:
-            title = self.sessions_by_id[session_id].get("title", "Nueva sesión")
-            self.session_listbox.insert(tk.END, title)
+        for item in results:
+            session_id = item["id"]
+            if session_id not in self.sessions_by_id:
+                maybe_session = self.session_repository.get_session(session_id)
+                if maybe_session:
+                    self.sessions_by_id[session_id] = maybe_session
+            title = item.get("title", "Nueva sesión")
+            updated_label = self._format_sidebar_datetime(item.get("updated_at"))
+            message_count = int(item.get("message_count", 0))
+            suffix = "mensaje" if message_count == 1 else "mensajes"
+            display = f"{title} | {updated_label} | {message_count} {suffix}"
+            self.session_listbox.insert(tk.END, display)
+
+        if previous:
+            for index, item in enumerate(self.session_list_items):
+                if item.get("id") == previous:
+                    self.session_listbox.selection_set(index)
+                    self.session_listbox.activate(index)
+                    break
+
+    def _format_sidebar_datetime(self, value: str | None) -> str:
+        if not value:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            return value
+
+    def _on_search_enter(self, event: tk.Event) -> str:
+        self._apply_session_filters()
+        return "break"
+
+    def _on_filter_changed(self, event: tk.Event) -> None:
+        self._apply_session_filters()
+
+    def _apply_session_filters(self) -> None:
+        self._refresh_session_listbox()
+
+    def _clear_session_filters(self) -> None:
+        self.session_search_query.set("")
+        self.session_date_filter.set("Todas")
+        self._refresh_session_listbox()
 
     def _select_session(self, session_id: str) -> None:
         loaded_session = self.session_repository.get_session(session_id) or self.sessions_by_id.get(session_id)
@@ -358,10 +431,12 @@ class MainWindow:
         self.sessions_by_id[session_id] = loaded_session
         self.current_session_id = session_id
 
-        index = self.session_order.index(session_id)
         self.session_listbox.selection_clear(0, tk.END)
-        self.session_listbox.selection_set(index)
-        self.session_listbox.activate(index)
+        for index, item in enumerate(self.session_list_items):
+            if item.get("id") == session_id:
+                self.session_listbox.selection_set(index)
+                self.session_listbox.activate(index)
+                break
 
         session_model = normalize_model(loaded_session.get("model"))
         loaded_session["model"] = session_model
@@ -377,7 +452,9 @@ class MainWindow:
         if not self.session_listbox.curselection():
             return
         index = self.session_listbox.curselection()[0]
-        session_id = self.session_order[index]
+        if index >= len(self.session_list_items):
+            return
+        session_id = self.session_list_items[index]["id"]
         if session_id != self.current_session_id:
             self._save_current_session_if_needed()
             self._select_session(session_id)
