@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
-from src.services.export_service import ExportService
+from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
 
 
@@ -29,7 +29,7 @@ class MainWindow:
             api_key=self.app_context.settings.resolve_api_key(),
         )
         self.session_storage = SessionStorage()
-        self.export_service = ExportService()
+        self.conversation_exporter = ConversationExporter()
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
@@ -123,28 +123,66 @@ class MainWindow:
             messagebox.showwarning("Exportar", "No hay una sesión activa para exportar.", parent=self.root)
             return
 
+        self._save_current_session_if_needed()
+        session = self.session_storage.load_session(self.current_session_id) or session
+
+        format_choice = simpledialog.askstring(
+            "Exportar",
+            "Formato (txt / md / json):",
+            initialvalue="txt",
+            parent=self.root,
+        )
+        if not format_choice:
+            return
+
+        normalized_format = format_choice.strip().lower().replace("markdown", "md")
+        format_map = {
+            "txt": (".txt", "Texto", self.conversation_exporter.export_txt),
+            "md": (".md", "Markdown", self.conversation_exporter.export_markdown),
+            "json": (".json", "JSON", self.conversation_exporter.export_json),
+        }
+
+        if normalized_format not in format_map:
+            messagebox.showerror("Exportar", "Formato no válido. Usa: txt, md o json.", parent=self.root)
+            return
+
+        extension, filetype_label, export_fn = format_map[normalized_format]
+        suggested_name = self.conversation_exporter.build_safe_filename(session.get("title", "Sesion"), normalized_format)
+
         output_path = filedialog.asksaveasfilename(
             title="Exportar conversación",
-            defaultextension=".txt",
-            filetypes=[("Texto", "*.txt"), ("Markdown", "*.md")],
+            defaultextension=extension,
+            initialfile=suggested_name,
+            filetypes=[(filetype_label, f"*{extension}")],
             parent=self.root,
         )
         if not output_path:
             return
 
-        self.logger.info("Exportación iniciada: sesión=%s destino=%s", self.current_session_id, output_path)
-        if output_path.lower().endswith(".md"):
-            ok = self.export_service.export_session_to_markdown(session, output_path)
-        else:
-            ok = self.export_service.export_session_to_txt(session, output_path)
+        self.logger.info(
+            "Exportación iniciada: sesión=%s formato=%s destino=%s",
+            self.current_session_id,
+            normalized_format,
+            output_path,
+        )
 
-        if ok:
-            self.logger.info("Exportación completada: sesión=%s destino=%s", self.current_session_id, output_path)
+        try:
+            export_fn(session, output_path)
+            self.logger.info(
+                "Exportación completada: sesión=%s formato=%s destino=%s",
+                self.current_session_id,
+                normalized_format,
+                output_path,
+            )
             messagebox.showinfo("Exportar", "Conversación exportada correctamente.", parent=self.root)
-            return
-
-        self.logger.error("Error exportando sesión=%s destino=%s", self.current_session_id, output_path)
-        messagebox.showerror("Exportar", "No se pudo exportar la conversación.", parent=self.root)
+        except Exception:
+            self.logger.exception(
+                "Error exportando sesión=%s formato=%s destino=%s",
+                self.current_session_id,
+                normalized_format,
+                output_path,
+            )
+            messagebox.showerror("Exportar", "No se pudo exportar la conversación.", parent=self.root)
 
     def _open_settings_window(self) -> None:
         SettingsDialog(self.root, self._on_settings_saved)
