@@ -251,9 +251,9 @@ class SessionRepository:
                 conn.execute(
                     """
                     INSERT INTO attachments(
-                        id, session_id, original_name, stored_path, extension, size_bytes, extracted_chars, created_at, extracted_path
+                        id, session_id, message_id, original_name, stored_path, extension, size_bytes, extracted_chars, created_at, extracted_path
                     ) VALUES(
-                        :id, :session_id, :original_name, :stored_path, :extension, :size_bytes, :extracted_chars, :created_at, :extracted_path
+                        :id, :session_id, :message_id, :original_name, :stored_path, :extension, :size_bytes, :extracted_chars, :created_at, :extracted_path
                     )
                     """,
                     attachment,
@@ -276,6 +276,54 @@ class SessionRepository:
             self.logger.exception("Error SQLite listando adjuntos: session_id=%s", session_id)
             return []
 
+    def list_pending_attachments(self, session_id: str) -> list[dict]:
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM attachments WHERE session_id = ? AND message_id IS NULL ORDER BY created_at ASC",
+                    (session_id,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite listando adjuntos pendientes: session_id=%s", session_id)
+            return []
+
+    def attach_pending_files_to_message(self, session_id: str, message_id: str, attachment_ids: list[str]) -> None:
+        if not attachment_ids:
+            return
+        placeholders = ",".join("?" for _ in attachment_ids)
+        params = [message_id, session_id, *attachment_ids]
+        try:
+            with self.database.connect() as conn:
+                conn.execute(
+                    f"""
+                    UPDATE attachments
+                    SET message_id = ?
+                    WHERE session_id = ? AND message_id IS NULL AND id IN ({placeholders})
+                    """,
+                    params,
+                )
+                conn.commit()
+        except sqlite3.Error:
+            self.logger.exception(
+                "Error SQLite vinculando adjuntos a mensaje: session_id=%s message_id=%s",
+                session_id,
+                message_id,
+            )
+            raise
+
+    def list_attachments_for_message(self, message_id: str) -> list[dict]:
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC",
+                    (message_id,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite listando adjuntos por mensaje: message_id=%s", message_id)
+            return []
+
     def delete_attachment(self, attachment_id: str) -> None:
         try:
             with self.database.connect() as conn:
@@ -291,13 +339,15 @@ class SessionRepository:
                 "SELECT id, role, content, created_at, position FROM messages WHERE session_id = ? ORDER BY position ASC",
                 (session_id,),
             ).fetchall()
-        return [
+        messages = [
             {
                 "id": row["id"],
                 "role": row["role"],
                 "content": row["content"],
                 "created_at": row["created_at"],
                 "position": row["position"],
+                "attachments": self.list_attachments_for_message(row["id"]),
             }
             for row in rows
         ]
+        return messages

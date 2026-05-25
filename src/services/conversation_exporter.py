@@ -62,9 +62,10 @@ class ConversationExporter:
                 [
                     f"[{self._format_datetime(message.get('created_at'))}] {label}:",
                     str(message.get("content", "")),
-                    "",
                 ]
             )
+            self._append_attachments_lines(lines, message.get("attachments", []), markdown=False)
+            lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"
 
@@ -90,9 +91,10 @@ class ConversationExporter:
                 [
                     f"### {label} — {self._format_datetime(message.get('created_at'))}",
                     str(message.get("content", "")),
-                    "",
                 ]
             )
+            self._append_attachments_lines(lines, message.get("attachments", []), markdown=True)
+            lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"
 
@@ -111,7 +113,31 @@ class ConversationExporter:
         clean = copy.deepcopy(session)
         if isinstance(clean, dict):
             clean.pop("api_key", None)
+            messages = clean.get("messages", [])
+            if isinstance(messages, list):
+                for message in messages:
+                    attachments = message.get("attachments", []) if isinstance(message, dict) else []
+                    if isinstance(attachments, list):
+                        message["attachments"] = [
+                            {
+                                "id": att.get("id"),
+                                "original_name": att.get("original_name"),
+                                "extension": att.get("extension"),
+                                "size_bytes": att.get("size_bytes"),
+                            }
+                            for att in attachments
+                            if isinstance(att, dict)
+                        ]
         return clean
+
+    @staticmethod
+    def _append_attachments_lines(lines: list[str], attachments: list[dict], markdown: bool) -> None:
+        if not attachments:
+            return
+        lines.append("Adjuntos:")
+        for attachment in attachments:
+            name = attachment.get("original_name", "archivo")
+            lines.append(f"- {name}")
 
     @staticmethod
     def _format_datetime(value: str | None) -> str:
