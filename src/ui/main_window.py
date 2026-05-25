@@ -27,7 +27,9 @@ class MainWindow:
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
         self.current_session_id: str | None = None
+        self._partial_message_active = False
         self.partial_message_start_index: str | None = None
+        self.partial_message_body_index: str | None = None
         self.partial_message_role: str | None = None
         self.partial_message_created_at: str | None = None
         self.partial_message_content: str = ""
@@ -421,27 +423,26 @@ class MainWindow:
         self.append_message("assistant", content)
 
     def append_partial_message(self, role: str, partial_content: str) -> None:
-        if self.partial_message_start_index is None:
+        if not self._partial_message_active:
             role_key = role if role in self.ROLE_DISPLAY else "system"
             label = self.ROLE_DISPLAY.get(role_key, "Sistema")
             tag = f"header_{role_key}"
             self.partial_message_role = role_key
             self.partial_message_created_at = datetime.now(timezone.utc).isoformat()
-            self.partial_message_content = partial_content
+            self.partial_message_content = ""
             timestamp = self._format_timestamp(self.partial_message_created_at)
             self.conversation_text.configure(state=tk.NORMAL)
-            self.partial_message_start_index = self.conversation_text.index(tk.END)
+            self.partial_message_start_index = self.conversation_text.index("end-1c")
+            if self.partial_message_start_index != "1.0":
+                self.conversation_text.insert(tk.END, "\n")
+                self.partial_message_start_index = self.conversation_text.index("end-1c")
             self.conversation_text.insert(tk.END, f"[{timestamp}] {label}\n", tag)
-            self.conversation_text.insert(tk.END, f"{self._clean_markdown_basic(partial_content)}\n\n", "body")
+            self.partial_message_body_index = self.conversation_text.index(tk.END)
+            self._partial_message_active = True
             self.conversation_text.see(tk.END)
             self.conversation_text.configure(state=tk.DISABLED)
-            return
-
-        self.conversation_text.configure(state=tk.NORMAL)
-        self.conversation_text.delete(self.partial_message_start_index, tk.END)
-        self.conversation_text.configure(state=tk.DISABLED)
-        self.partial_message_start_index = None
-        self.append_partial_message(role, partial_content)
+        if partial_content:
+            self.update_partial_message(partial_content)
 
     def update_partial_message(self, delta: str) -> None:
         if self.partial_message_start_index is None:
@@ -450,30 +451,27 @@ class MainWindow:
         self._redraw_partial_message()
 
     def _redraw_partial_message(self) -> None:
-        if self.partial_message_start_index is None:
+        if not self._partial_message_active or self.partial_message_body_index is None:
             return
-        role_key = self.partial_message_role or "assistant"
-        label = self.ROLE_DISPLAY.get(role_key, "PROM-9")
-        tag = f"header_{role_key}"
-        timestamp = self._format_timestamp(self.partial_message_created_at)
         cleaned_content = self._clean_markdown_basic(self.partial_message_content)
         self.conversation_text.configure(state=tk.NORMAL)
-        self.conversation_text.delete(self.partial_message_start_index, tk.END)
-        self.conversation_text.insert(tk.END, f"[{timestamp}] {label}\n", tag)
+        self.conversation_text.delete(self.partial_message_body_index, tk.END)
         self.conversation_text.insert(tk.END, f"{cleaned_content}\n\n", "body")
         self.conversation_text.see(tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
 
     def finish_partial_message(self) -> None:
-        if self.partial_message_start_index is not None:
+        if self._partial_message_active:
             self._redraw_partial_message()
+        self._partial_message_active = False
         self.partial_message_start_index = None
+        self.partial_message_body_index = None
         self.partial_message_role = None
         self.partial_message_created_at = None
         self.partial_message_content = ""
 
     def cancel_partial_message(self) -> None:
-        if self.partial_message_start_index is None:
+        if not self._partial_message_active:
             return
         if self.partial_message_content.strip():
             if not self.partial_message_content.endswith("\n"):
@@ -482,9 +480,12 @@ class MainWindow:
             self._redraw_partial_message()
         else:
             self.conversation_text.configure(state=tk.NORMAL)
-            self.conversation_text.delete(self.partial_message_start_index, tk.END)
+            if self.partial_message_start_index is not None:
+                self.conversation_text.delete(self.partial_message_start_index, tk.END)
             self.conversation_text.configure(state=tk.DISABLED)
+        self._partial_message_active = False
         self.partial_message_start_index = None
+        self.partial_message_body_index = None
         self.partial_message_role = None
         self.partial_message_created_at = None
         self.partial_message_content = ""
