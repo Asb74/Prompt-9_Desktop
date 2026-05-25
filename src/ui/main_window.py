@@ -126,16 +126,10 @@ class MainWindow:
         self._save_current_session_if_needed()
         session = self.session_storage.load_session(self.current_session_id) or session
 
-        format_choice = simpledialog.askstring(
-            "Exportar",
-            "Formato (txt / md / json):",
-            initialvalue="txt",
-            parent=self.root,
-        )
-        if not format_choice:
+        normalized_format = self._prompt_export_format()
+        if not normalized_format:
             return
 
-        normalized_format = format_choice.strip().lower().replace("markdown", "md")
         format_map = {
             "txt": (".txt", "Texto", self.conversation_exporter.export_txt),
             "md": (".md", "Markdown", self.conversation_exporter.export_markdown),
@@ -183,6 +177,55 @@ class MainWindow:
                 output_path,
             )
             messagebox.showerror("Exportar", "No se pudo exportar la conversación.", parent=self.root)
+
+    def _prompt_export_format(self) -> str | None:
+        choices = {
+            "TXT (.txt)": "txt",
+            "Markdown (.md)": "md",
+            "JSON (.json)": "json",
+        }
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Exportar conversación")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Formato:").grid(row=0, column=0, sticky="w")
+
+        selected_label = tk.StringVar(value="TXT (.txt)")
+        format_selector = ttk.Combobox(
+            frame,
+            textvariable=selected_label,
+            values=list(choices.keys()),
+            state="readonly",
+            width=20,
+        )
+        format_selector.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10))
+        format_selector.current(0)
+
+        result: dict[str, str | None] = {"format": None}
+
+        def on_export() -> None:
+            label = selected_label.get().strip()
+            result["format"] = choices.get(label)
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            result["format"] = None
+            dialog.destroy()
+
+        ttk.Button(frame, text="Exportar", command=on_export).grid(row=2, column=0, sticky="e", padx=(0, 6))
+        ttk.Button(frame, text="Cancelar", command=on_cancel).grid(row=2, column=1, sticky="w")
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        format_selector.focus_set()
+
+        self.root.wait_window(dialog)
+        return result["format"]
 
     def _open_settings_window(self) -> None:
         SettingsDialog(self.root, self._on_settings_saved)
