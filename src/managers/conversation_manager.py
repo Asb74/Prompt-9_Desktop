@@ -14,7 +14,7 @@ class ConversationManager:
 
     def reset(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]
-        self.logger.info("Conversación creada/reiniciada.")
+        self.logger.info("Conversación reiniciada.")
 
     def add_user_message(self, content: str) -> None:
         self.messages.append({"role": "user", "content": content})
@@ -23,17 +23,21 @@ class ConversationManager:
         self.messages.append({"role": "assistant", "content": content})
 
     def load_messages(self, messages: list[dict[str, Any]]) -> None:
+        self.reset()
         valid_roles = {"system", "user", "assistant"}
-        rebuilt = [{"role": "system", "content": self.system_prompt}]
         for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role")
-            content = msg.get("content", "")
-            if role in valid_roles and isinstance(content, str):
-                if role == "system":
-                    continue
-                rebuilt.append({"role": role, "content": content})
-        bounded_non_system = rebuilt[1:][-self.max_messages :]
-        self.messages = [rebuilt[0], *bounded_non_system]
+            content = msg.get("content")
+            if role not in valid_roles or not isinstance(content, str) or not content.strip():
+                continue
+            if role == "system":
+                continue
+            self.messages.append({"role": role, "content": content})
+
+        self.messages = [self.messages[0], *self.messages[1:][-self.max_messages :]]
+        self.logger.info("Conversación reconstruida con %s mensajes.", len(self.messages) - 1)
 
     def get_messages_for_openai(self) -> list[dict[str, Any]]:
         system_message = self.messages[0]
