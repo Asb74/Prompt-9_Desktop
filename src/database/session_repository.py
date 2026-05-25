@@ -245,6 +245,46 @@ class SessionRepository:
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (self._now_iso(), session_id))
             conn.commit()
 
+    def add_attachment(self, attachment: dict) -> None:
+        try:
+            with self.database.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO attachments(
+                        id, session_id, original_name, stored_path, extension, size_bytes, extracted_chars, created_at, extracted_path
+                    ) VALUES(
+                        :id, :session_id, :original_name, :stored_path, :extension, :size_bytes, :extracted_chars, :created_at, :extracted_path
+                    )
+                    """,
+                    attachment,
+                )
+                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (self._now_iso(), attachment["session_id"]))
+                conn.commit()
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite al agregar adjunto: session_id=%s", attachment.get("session_id"))
+            raise
+
+    def list_attachments(self, session_id: str) -> list[dict]:
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at ASC",
+                    (session_id,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite listando adjuntos: session_id=%s", session_id)
+            return []
+
+    def delete_attachment(self, attachment_id: str) -> None:
+        try:
+            with self.database.connect() as conn:
+                conn.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+                conn.commit()
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite eliminando adjunto: attachment_id=%s", attachment_id)
+            raise
+
     def get_messages(self, session_id: str) -> list[dict]:
         with self.database.connect() as conn:
             rows = conn.execute(

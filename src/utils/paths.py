@@ -23,3 +23,9 @@ def logs_dir() -> Path:
 
 def icons_dir() -> Path:
     return assets_dir() / "icons"
+
+
+def attachments_dir() -> Path:
+    path = data_dir() / "attachments"
+    path.mkdir(parents=True, exist_ok=True)
+    return path

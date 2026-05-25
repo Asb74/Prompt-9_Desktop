@@ -7,9 +7,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
+from src.managers.attachment_manager import AttachmentManager
 from src.database.database import Database
 from src.database.json_migrator import JsonMigrator
 from src.database.session_repository import SessionRepository
+from src.services.text_chunker import build_document_context
 from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
 
@@ -34,6 +36,8 @@ class MainWindow:
         self.database.initialize()
         self.session_repository = SessionRepository(self.database)
         self.json_migrator = JsonMigrator(self.session_repository)
+        self.attachment_manager = AttachmentManager(self.session_repository)
+        self.current_attachments: list[dict] = []
         self.conversation_exporter = ConversationExporter()
 
         self.sessions_by_id: dict[str, dict] = {}
@@ -290,14 +294,21 @@ class MainWindow:
         bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
 
+        attachments_row = ttk.Frame(bottom)
+        attachments_row.grid(row=0, column=0, sticky="ew", pady=(0, 6), padx=(0, 8))
+        attachments_row.columnconfigure(1, weight=1)
+        ttk.Button(attachments_row, text="Adjuntar", command=self._on_attach_files).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.attachments_label = ttk.Label(attachments_row, text="Adjuntos: (ninguno)")
+        self.attachments_label.grid(row=0, column=1, sticky="w")
+
         self.input_text = tk.Text(bottom, height=4, wrap=tk.WORD)
-        self.input_text.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.input_text.grid(row=1, column=0, sticky="ew", padx=(0, 8))
         self.input_text.bind("<Control-Return>", self._on_ctrl_enter)
 
         self.send_button = ttk.Button(bottom, text="Enviar", command=self._on_send)
-        self.send_button.grid(row=0, column=1, sticky="ns")
+        self.send_button.grid(row=1, column=1, sticky="ns")
         self.cancel_button = ttk.Button(bottom, text="Cancelar", command=self._on_cancel_generation, state=tk.DISABLED)
-        self.cancel_button.grid(row=0, column=2, sticky="ns")
+        self.cancel_button.grid(row=1, column=2, sticky="ns")
 
     def _load_initial_sessions(self) -> None:
         self.json_migrator.migrate()
@@ -349,6 +360,8 @@ class MainWindow:
         if session_id in self.session_order:
             self.session_order.remove(session_id)
         self.current_session_id = None
+        self.current_attachments = []
+        self._refresh_attachments_ui()
         self._refresh_session_listbox()
 
         if self.session_order:
@@ -443,10 +456,41 @@ class MainWindow:
         self.model_selector.set(session_model)
 
         self.chat_manager.conversation_manager.load_messages(loaded_session.get("messages", []))
+        self.current_attachments = self.attachment_manager.list_attachments(session_id)
+        self._refresh_attachments_ui()
         self._clear_conversation_view()
         for msg in loaded_session.get("messages", []):
             self.append_message(msg.get("role", "system"), msg.get("content", ""), msg.get("created_at"))
         self.logger.info("Sesión seleccionada: %s", session_id)
+
+
+    def _refresh_attachments_ui(self) -> None:
+        if not self.current_attachments:
+            self.attachments_label.configure(text="Adjuntos: (ninguno)")
+            return
+        names = [att.get("original_name", "archivo") for att in self.current_attachments]
+        self.attachments_label.configure(text=f"Adjuntos ({len(names)}): " + ", ".join(names[:3]) + ("..." if len(names) > 3 else ""))
+
+    def _on_attach_files(self) -> None:
+        if not self.current_session_id:
+            return
+        paths = filedialog.askopenfilenames(
+            title="Adjuntar documentos",
+            filetypes=[("Documentos soportados", "*.txt *.csv *.pdf *.docx *.xlsx")],
+            parent=self.root,
+        )
+        if not paths:
+            return
+
+        for path in paths:
+            try:
+                self.attachment_manager.add_attachment(self.current_session_id, path)
+            except Exception as exc:
+                self.logger.exception("Error adjuntando archivo: %s", path)
+                messagebox.showerror("Adjuntos", f"No se pudo adjuntar {path}: {exc}", parent=self.root)
+
+        self.current_attachments = self.attachment_manager.list_attachments(self.current_session_id)
+        self._refresh_attachments_ui()
 
     def _on_session_select(self, event: tk.Event) -> None:
         if not self.session_listbox.curselection():
@@ -488,10 +532,11 @@ class MainWindow:
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
-        worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model), daemon=True)
+        document_context = build_document_context(self.current_attachments)
+        worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model, document_context), daemon=True)
         worker.start()
 
-    def _assistant_response_worker(self, user_message: str, model: str) -> None:
+    def _assistant_response_worker(self, user_message: str, model: str, document_context: str) -> None:
         try:
             def on_delta(delta: str) -> None:
                 self.root.after(0, lambda d=delta: self.update_partial_message(d))
@@ -502,9 +547,10 @@ class MainWindow:
                     model=model,
                     on_delta=on_delta,
                     should_cancel=self.cancel_event.is_set,
+                    document_context=document_context,
                 )
             else:
-                response = self.chat_manager.send_message(user_text=user_message, model=model)
+                response = self.chat_manager.send_message(user_text=user_message, model=model, document_context=document_context)
                 self.root.after(0, lambda r=response: self.update_partial_message(r))
             self.root.after(0, lambda: self._on_worker_success(response))
         except Exception:

@@ -2,3 +2,7 @@ openai
 httpx
 pillow
 python-dotenv
+
+pypdf
+python-docx
+openpyxl
