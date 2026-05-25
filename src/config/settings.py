@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 
+import logging
 import os
 
 load_dotenv()
@@ -17,14 +18,18 @@ SYSTEM_PROMPT = "Eres PROM-9™, un asistente de escritorio integrado en una apl
 
 
 def normalize_model(model: str | None) -> str:
+    logger = logging.getLogger(__name__)
     if model is None:
+        logger.info("Modelo vacío detectado; usando DEFAULT_MODEL=%s", DEFAULT_MODEL)
         return DEFAULT_MODEL
 
     normalized = model.strip()
     if not normalized:
+        logger.info("Modelo en blanco detectado; usando DEFAULT_MODEL=%s", DEFAULT_MODEL)
         return DEFAULT_MODEL
 
     if normalized in AVAILABLE_MODELS:
         return normalized
 
+    logger.warning("Modelo inválido '%s'; usando DEFAULT_MODEL=%s", normalized, DEFAULT_MODEL)
     return DEFAULT_MODEL

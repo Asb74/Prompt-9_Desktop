@@ -20,13 +20,12 @@ class SessionStorage:
 
     def create_session(self, model: str | None, title: str = "Nueva sesión") -> dict:
         now = self._now_iso()
-        normalized_model = normalize_model(model)
         session = {
             "id": str(uuid4()),
             "title": title,
             "created_at": now,
             "updated_at": now,
-            "model": normalized_model,
+            "model": normalize_model(model),
             "messages": [],
         }
         self.logger.info("Sesión creada: %s", session["id"])
@@ -34,22 +33,16 @@ class SessionStorage:
 
     def list_sessions(self) -> list[dict]:
         sessions: list[dict] = []
-        for json_path in sorted(self.sessions_dir.glob("*.json")):
-            try:
-                with json_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                if isinstance(data, dict) and data.get("id"):
-                    model_before = data.get("model")
-                    normalized_model = normalize_model(model_before)
-                    if model_before != normalized_model:
-                        data["model"] = normalized_model
-                        self.save_session(data)
-                    sessions.append(data)
-                    self.logger.info("Sesión cargada: %s", data.get("id"))
-            except Exception:
-                self.logger.exception("Error leyendo JSON de sesión: %s", json_path)
+        for json_path in self.sessions_dir.glob("*.json"):
+            session = self._load_json_file(json_path)
+            if session:
+                sessions.append(session)
         sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        self.logger.info("Sesiones cargadas: %s", len(sessions))
         return sessions
+
+    def load_session(self, session_id: str) -> dict | None:
+        return self._load_json_file(self.sessions_dir / f"{session_id}.json")
 
     def save_session(self, session: dict) -> None:
         try:
@@ -61,3 +54,53 @@ class SessionStorage:
             self.logger.info("Sesión guardada: %s", session["id"])
         except Exception:
             self.logger.exception("Error guardando JSON de sesión: %s", session.get("id"))
+
+    def delete_session(self, session_id: str) -> bool:
+        json_path = self.sessions_dir / f"{session_id}.json"
+        if not json_path.exists():
+            return False
+        json_path.unlink()
+        self.logger.info("Sesión eliminada: %s", session_id)
+        return True
+
+    def rename_session(self, session_id: str, new_title: str) -> dict | None:
+        session = self.load_session(session_id)
+        if not session:
+            return None
+        cleaned_title = (new_title or "").strip()
+        if not cleaned_title:
+            return session
+        session["title"] = cleaned_title
+        self.save_session(session)
+        self.logger.info("Sesión renombrada: %s", session_id)
+        return session
+
+    def update_session_title_from_first_user_message(self, session: dict) -> dict:
+        if session.get("title") != "Nueva sesión":
+            return session
+        for msg in session.get("messages", []):
+            if msg.get("role") == "user":
+                content = (msg.get("content") or "").strip()
+                if content:
+                    session["title"] = content[:40]
+                break
+        return session
+
+    def _load_json_file(self, json_path: Path) -> dict | None:
+        try:
+            with json_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            self.logger.exception("JSON corrupto ignorado: %s", json_path)
+            return None
+
+        if not isinstance(data, dict) or not data.get("id"):
+            self.logger.error("JSON inválido ignorado: %s", json_path)
+            return None
+
+        data.setdefault("title", "Nueva sesión")
+        data.setdefault("created_at", self._now_iso())
+        data.setdefault("updated_at", self._now_iso())
+        data.setdefault("messages", [])
+        data["model"] = normalize_model(data.get("model"))
+        return data

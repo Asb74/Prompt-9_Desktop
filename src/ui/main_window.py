@@ -2,20 +2,16 @@ import logging
 import re
 import threading
 import tkinter as tk
-from datetime import datetime
-from tkinter import ttk
+from datetime import datetime, timezone
+from tkinter import messagebox, simpledialog, ttk
 
+from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
-from src.config.settings import normalize_model
 
 
 class MainWindow:
-    ROLE_DISPLAY = {
-        "system": "Sistema",
-        "user": "Tú",
-        "assistant": "PROM-9",
-    }
+    ROLE_DISPLAY = {"system": "Sistema", "user": "Tú", "assistant": "PROM-9"}
 
     def __init__(self, root: tk.Tk, app_context) -> None:
         self.root = root
@@ -62,7 +58,9 @@ class MainWindow:
         sidebar.grid_propagate(False)
 
         ttk.Label(sidebar, text="Sesiones", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Button(sidebar, text="Nueva sesión", command=self._new_session).pack(fill=tk.X, pady=(8, 8))
+        ttk.Button(sidebar, text="Nueva sesión", command=self._new_session).pack(fill=tk.X, pady=(8, 6))
+        ttk.Button(sidebar, text="Renombrar", command=self._rename_session).pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(sidebar, text="Eliminar", command=self._delete_session).pack(fill=tk.X, pady=(0, 8))
 
         self.session_listbox = tk.Listbox(sidebar, height=20)
         self.session_listbox.pack(fill=tk.BOTH, expand=True)
@@ -83,15 +81,12 @@ class MainWindow:
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(0, weight=1)
 
-        ttk.Label(top, text=self.app_context.settings.APP_NAME, font=("Segoe UI", 14, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(top, text=self.app_context.settings.APP_NAME, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w")
 
         default_model = normalize_model(self.app_context.settings.DEFAULT_MODEL)
-        model_var = tk.StringVar(value=default_model)
         self.model_selector = ttk.Combobox(
             top,
-            textvariable=model_var,
+            textvariable=tk.StringVar(value=default_model),
             values=self.app_context.settings.AVAILABLE_MODELS,
             state="readonly",
             width=18,
@@ -112,9 +107,7 @@ class MainWindow:
         self.conversation_text.tag_configure("header_system", foreground="#7c3aed", font=("Segoe UI", 10, "bold"))
         self.conversation_text.tag_configure("body", font=("Segoe UI", 10), lmargin1=4, lmargin2=4, spacing3=12)
 
-        conversation_scrollbar = ttk.Scrollbar(
-            conversation_frame, orient=tk.VERTICAL, command=self.conversation_text.yview
-        )
+        conversation_scrollbar = ttk.Scrollbar(conversation_frame, orient=tk.VERTICAL, command=self.conversation_text.yview)
         conversation_scrollbar.grid(row=0, column=1, sticky="ns")
         self.conversation_text.configure(yscrollcommand=conversation_scrollbar.set)
 
@@ -132,25 +125,59 @@ class MainWindow:
 
     def _load_initial_sessions(self) -> None:
         sessions = self.session_storage.list_sessions()
-        if not sessions:
+        for session in sessions:
+            self._cache_session(session)
+
+        if not self.session_order:
+            self.logger.info("No había sesiones; se crea una nueva.")
             self._new_session()
             return
 
-        for session in sessions:
-            self._cache_session(session)
         self._refresh_session_listbox()
         self._select_session(self.session_order[0])
 
     def _new_session(self) -> None:
-        self.chat_manager.reset_conversation()
-        self._clear_conversation_view()
+        self._save_current_session_if_needed()
         selected_model = normalize_model(self.model_selector.get())
         session = self.session_storage.create_session(model=selected_model)
         self.session_storage.save_session(session)
         self._cache_session(session, prepend=True)
         self._refresh_session_listbox()
         self._select_session(session["id"])
-        self.append_system_message("Nueva sesión creada.")
+
+    def _rename_session(self) -> None:
+        if not self.current_session_id:
+            return
+        current_title = self.sessions_by_id[self.current_session_id].get("title", "")
+        new_title = simpledialog.askstring("Renombrar sesión", "Nuevo nombre:", initialvalue=current_title, parent=self.root)
+        if not new_title or not new_title.strip():
+            return
+        updated = self.session_storage.rename_session(self.current_session_id, new_title)
+        if not updated:
+            return
+        self.sessions_by_id[self.current_session_id] = updated
+        self._refresh_session_listbox()
+        self._select_session(self.current_session_id)
+
+    def _delete_session(self) -> None:
+        if not self.current_session_id:
+            return
+        session_id = self.current_session_id
+        title = self.sessions_by_id[session_id].get("title", "Nueva sesión")
+        if not messagebox.askyesno("Eliminar sesión", f"¿Eliminar la sesión '{title}'?", parent=self.root):
+            return
+
+        self.session_storage.delete_session(session_id)
+        self.sessions_by_id.pop(session_id, None)
+        if session_id in self.session_order:
+            self.session_order.remove(session_id)
+        self.current_session_id = None
+        self._refresh_session_listbox()
+
+        if self.session_order:
+            self._select_session(self.session_order[0])
+        else:
+            self._new_session()
 
     def _cache_session(self, session: dict, prepend: bool = False) -> None:
         session_id = session["id"]
@@ -169,23 +196,26 @@ class MainWindow:
             self.session_listbox.insert(tk.END, title)
 
     def _select_session(self, session_id: str) -> None:
+        loaded_session = self.session_storage.load_session(session_id) or self.sessions_by_id.get(session_id)
+        if not loaded_session:
+            return
+        self.sessions_by_id[session_id] = loaded_session
         self.current_session_id = session_id
+
         index = self.session_order.index(session_id)
         self.session_listbox.selection_clear(0, tk.END)
         self.session_listbox.selection_set(index)
         self.session_listbox.activate(index)
 
-        session = self.sessions_by_id[session_id]
-        session_model = normalize_model(session.get("model"))
-        session["model"] = session_model
+        session_model = normalize_model(loaded_session.get("model"))
+        loaded_session["model"] = session_model
         self.model_selector.set(session_model)
 
-        self.chat_manager.reset_conversation()
-        self.chat_manager.conversation_manager.load_messages(session.get("messages", []))
-
+        self.chat_manager.conversation_manager.load_messages(loaded_session.get("messages", []))
         self._clear_conversation_view()
-        for msg in session.get("messages", []):
+        for msg in loaded_session.get("messages", []):
             self.append_message(msg.get("role", "system"), msg.get("content", ""), msg.get("created_at"))
+        self.logger.info("Sesión seleccionada: %s", session_id)
 
     def _on_session_select(self, event: tk.Event) -> None:
         if not self.session_listbox.curselection():
@@ -193,7 +223,17 @@ class MainWindow:
         index = self.session_listbox.curselection()[0]
         session_id = self.session_order[index]
         if session_id != self.current_session_id:
+            self._save_current_session_if_needed()
             self._select_session(session_id)
+
+    def _save_current_session_if_needed(self) -> None:
+        if not self.current_session_id:
+            return
+        session = self.sessions_by_id.get(self.current_session_id)
+        if not session:
+            return
+        session["model"] = normalize_model(self.model_selector.get())
+        self.session_storage.save_session(session)
 
     def _on_ctrl_enter(self, event: tk.Event) -> str:
         self._on_send()
@@ -204,7 +244,6 @@ class MainWindow:
         if not user_message or not self.current_session_id:
             return
 
-        self.logger.info("Mensaje enviado por el usuario.")
         self.append_user_message(user_message)
         self._store_message("user", user_message)
         self.input_text.delete("1.0", tk.END)
@@ -213,48 +252,36 @@ class MainWindow:
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
-        worker = threading.Thread(
-            target=self._assistant_response_worker,
-            args=(user_message, model),
-            daemon=True,
-        )
+        worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model), daemon=True)
         worker.start()
 
     def _assistant_response_worker(self, user_message: str, model: str) -> None:
         try:
             response = self.chat_manager.send_message(user_message, model)
             self.root.after(0, lambda: self._on_worker_success(response))
-        except Exception as exc:
-            self.logger.exception("Error en worker de asistencia: %s", exc)
+        except Exception:
+            self.logger.exception("Error en worker de asistencia")
             self.root.after(0, self._on_worker_error)
 
     def _on_worker_success(self, response: str) -> None:
-        self.append_assistant_message(response)
-        self._store_message("assistant", response)
+        if response:
+            self.append_assistant_message(response)
+            self._store_message("assistant", response)
         self.send_button.configure(state=tk.NORMAL)
 
     def _on_worker_error(self) -> None:
         error_msg = "No se pudo obtener respuesta de OpenAI. Revisa la configuración, el modelo o la conexión."
         self.append_system_message(error_msg)
-        self._store_message("system", error_msg)
         self.send_button.configure(state=tk.NORMAL)
 
     def _store_message(self, role: str, content: str) -> None:
-        if not self.current_session_id:
+        if not self.current_session_id or not content.strip():
             return
         session = self.sessions_by_id[self.current_session_id]
-        msg = {
-            "role": role,
-            "content": content,
-            "created_at": datetime.now().isoformat(),
-        }
+        msg = {"role": role, "content": content, "created_at": datetime.now(timezone.utc).isoformat()}
         session.setdefault("messages", []).append(msg)
-
-        if role == "user" and session.get("title") == "Nueva sesión" and content.strip():
-            session["title"] = content.strip()[:40]
-            self._refresh_session_listbox()
-            self._select_session(self.current_session_id)
-
+        self.session_storage.update_session_title_from_first_user_message(session)
+        self._refresh_session_listbox()
         self.session_storage.save_session(session)
 
     def _clear_conversation_view(self) -> None:
@@ -298,20 +325,6 @@ class MainWindow:
         self.conversation_text.insert(tk.END, f"{cleaned_content}\n\n", "body")
         self.conversation_text.see(tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
-
-    def append_partial_message(self, role: str, content: str) -> None:
-        if self.partial_message_start_index is None:
-            self.append_message(role, content)
-            self.partial_message_start_index = self.conversation_text.index("end-2l")
-            return
-        self.conversation_text.configure(state=tk.NORMAL)
-        self.conversation_text.delete(self.partial_message_start_index, "end-1c")
-        self.conversation_text.insert(self.partial_message_start_index, self._clean_markdown_basic(content))
-        self.conversation_text.see(tk.END)
-        self.conversation_text.configure(state=tk.DISABLED)
-
-    def finish_partial_message(self) -> None:
-        self.partial_message_start_index = None
 
     def append_system_message(self, content: str) -> None:
         self.append_message("system", content)
