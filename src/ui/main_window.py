@@ -1,4 +1,7 @@
 import tkinter as tk
+import logging
+import threading
+import time
 from tkinter import ttk
 
 
@@ -6,6 +9,7 @@ class MainWindow:
     def __init__(self, root: tk.Tk, app_context) -> None:
         self.root = root
         self.app_context = app_context
+        self.logger = logging.getLogger(__name__)
 
         self._configure_root()
         self._build_layout()
@@ -68,8 +72,19 @@ class MainWindow:
         self.model_selector.grid(row=0, column=1, sticky="e")
 
     def _build_conversation_area(self, parent: ttk.Frame) -> None:
-        self.conversation_text = tk.Text(parent, wrap=tk.WORD, state=tk.DISABLED)
-        self.conversation_text.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        conversation_frame = ttk.Frame(parent)
+        conversation_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        conversation_frame.rowconfigure(0, weight=1)
+        conversation_frame.columnconfigure(0, weight=1)
+
+        self.conversation_text = tk.Text(conversation_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.conversation_text.grid(row=0, column=0, sticky="nsew")
+
+        conversation_scrollbar = ttk.Scrollbar(
+            conversation_frame, orient=tk.VERTICAL, command=self.conversation_text.yview
+        )
+        conversation_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.conversation_text.configure(yscrollcommand=conversation_scrollbar.set)
 
     def _build_input_bar(self, parent: ttk.Frame) -> None:
         bottom = ttk.Frame(parent)
@@ -78,29 +93,65 @@ class MainWindow:
 
         self.input_text = tk.Text(bottom, height=4, wrap=tk.WORD)
         self.input_text.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.input_text.bind("<Control-Return>", self._on_ctrl_enter)
 
-        send_button = ttk.Button(bottom, text="Enviar", command=self._on_send)
-        send_button.grid(row=0, column=1, sticky="ns")
+        self.send_button = ttk.Button(bottom, text="Enviar", command=self._on_send)
+        self.send_button.grid(row=0, column=1, sticky="ns")
 
     def _new_session(self) -> None:
         session_count = self.session_listbox.size() + 1
         self.session_listbox.insert(tk.END, f"Sesión {session_count}")
-        self._append_message("Sistema", "Nueva sesión creada.")
+        self.logger.info("Nueva sesión iniciada: Sesión %s", session_count)
+        self.append_system_message("Nueva sesión creada.")
+
+    def _on_ctrl_enter(self, event: tk.Event) -> str:
+        self._on_send()
+        return "break"
 
     def _on_send(self) -> None:
         user_message = self.input_text.get("1.0", tk.END).strip()
         if not user_message:
             return
 
+        self.logger.info("Mensaje enviado por el usuario.")
+        self.append_user_message(user_message)
         self.input_text.delete("1.0", tk.END)
-        self._append_message("Usuario", user_message)
-        self._append_message(
-            "PROM-9",
-            "Respuesta simulada. La integración OpenAI se añadirá en una fase posterior.",
-        )
+        self.send_button.configure(state=tk.DISABLED)
 
-    def _append_message(self, sender: str, message: str) -> None:
+        worker = threading.Thread(
+            target=self._simulate_assistant_response_worker,
+            daemon=True,
+        )
+        worker.start()
+
+    def _simulate_assistant_response_worker(self) -> None:
+        try:
+            time.sleep(0.5)
+            response = "Respuesta simulada. La integración OpenAI se añadirá en una fase posterior."
+            self.root.after(0, lambda: self._on_worker_success(response))
+        except Exception as exc:
+            self.logger.exception("Error en worker simulado: %s", exc)
+            self.root.after(0, self._on_worker_error)
+
+    def _on_worker_success(self, response: str) -> None:
+        self.append_assistant_message(response)
+        self.send_button.configure(state=tk.NORMAL)
+
+    def _on_worker_error(self) -> None:
+        self.append_system_message("Ocurrió un error al generar la respuesta simulada.")
+        self.send_button.configure(state=tk.NORMAL)
+
+    def append_message(self, role: str, content: str) -> None:
         self.conversation_text.configure(state=tk.NORMAL)
-        self.conversation_text.insert(tk.END, f"{sender}:\n{message}\n\n")
+        self.conversation_text.insert(tk.END, f"{role}\n{content}\n\n")
         self.conversation_text.see(tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
+
+    def append_system_message(self, content: str) -> None:
+        self.append_message("[Sistema]", content)
+
+    def append_user_message(self, content: str) -> None:
+        self.append_message("[Tú]", content)
+
+    def append_assistant_message(self, content: str) -> None:
+        self.append_message("[PROM-9]", content)
