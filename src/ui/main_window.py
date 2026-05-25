@@ -15,6 +15,7 @@ from src.database.session_repository import SessionRepository
 from src.services.text_chunker import build_document_context
 from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
+from src.services.spreadsheet_analyzer import SpreadsheetAnalyzer
 
 
 class MainWindow:
@@ -44,6 +45,7 @@ class MainWindow:
         self.attachment_manager = AttachmentManager(self.session_repository)
         self.pending_attachments: list[dict] = []
         self.conversation_exporter = ConversationExporter()
+        self.spreadsheet_analyzer = SpreadsheetAnalyzer()
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
@@ -586,7 +588,10 @@ class MainWindow:
                 self.current_session_id,
                 len(used_attachments),
             )
+        local_spreadsheet_context = self._build_local_spreadsheet_context(user_message, used_attachments)
         document_context = build_document_context(used_attachments)
+        if local_spreadsheet_context:
+            document_context = f"{document_context}\n\n{local_spreadsheet_context}" if document_context else local_spreadsheet_context
         context_chars = len(document_context)
         self.logger.info(
             "Contexto documental preparado para envío actual: session_id=%s adjuntos=%s chars=%s truncado=%s",
@@ -609,6 +614,48 @@ class MainWindow:
         self._set_status("Consultando OpenAI...")
         worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model, document_context), daemon=True)
         worker.start()
+
+    def _build_local_spreadsheet_context(self, user_message: str, attachments: list[dict]) -> str:
+        if not self._looks_like_group_query(user_message):
+            return ""
+
+        excel_attachments = [a for a in attachments if a.get("extension", "").lower() in {".xlsx", ".xls"}]
+        if not excel_attachments:
+            return ""
+
+        self._set_status("Analizando Excel...")
+        latest = sorted(excel_attachments, key=lambda a: a.get("created_at", ""), reverse=True)[0]
+        stored_path = latest.get("stored_path")
+        if not stored_path:
+            return ""
+
+        try:
+            self.logger.info("Análisis local de Excel iniciado: archivo=%s", latest.get("original_name"))
+            result = self.spreadsheet_analyzer.aggregate_by_column(str(stored_path), "variedad", "neto")
+            if not result:
+                self.logger.info("Análisis local de Excel sin resultados agregados.")
+                return ""
+            total = sum(result.values())
+            lines = ["Resultado calculado localmente:"]
+            for key, value in result.items():
+                lines.append(f"{key}: {value:.2f} kg")
+            lines.append(f"Total: {total:.2f} kg")
+            lines.append("Instrucción al modelo: Usa estos resultados calculados localmente. No digas que no puedes leer el archivo.")
+            self.logger.info(
+                "Análisis local completado: columnas=variedad/neto filas_grupo=%s grupos=%s",
+                len(result),
+                result,
+            )
+            self._set_status("Generando respuesta...")
+            return "\n".join(lines)
+        except Exception:
+            self.logger.exception("Error en análisis local de Excel")
+            return ""
+
+    def _looks_like_group_query(self, text: str) -> bool:
+        normalized = text.lower()
+        terms = ["kg", "kilos", "neto", "variedad", "agrupado"]
+        return sum(1 for term in terms if term in normalized) >= 3
 
     def _assistant_response_worker(self, user_message: str, model: str, document_context: str) -> None:
         try:

@@ -23,7 +23,7 @@ class AttachmentManager:
             raise ValueError("El archivo no existe o no es válido.")
 
         extension = source.suffix.lower()
-        allowed = {".txt", ".csv", ".pdf", ".docx", ".xlsx"}
+        allowed = {".txt", ".csv", ".pdf", ".docx", ".xlsx", ".xls"}
         if extension not in allowed:
             raise ValueError(f"Extensión no permitida: {extension}")
 

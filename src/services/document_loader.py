@@ -3,17 +3,20 @@ import logging
 from pathlib import Path
 
 from docx import Document
-from openpyxl import load_workbook
 from pypdf import PdfReader
+
+from src.services.spreadsheet_analyzer import SpreadsheetAnalyzer
 
 
 class DocumentLoader:
     CSV_MAX_ROWS = 200
     XLSX_MAX_ROWS_PER_SHEET = 300
+    XLS_MAX_ROWS_PER_SHEET = 300
     INTERMEDIATE_CHAR_LIMIT = 120000
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
+        self.spreadsheet_analyzer = SpreadsheetAnalyzer()
 
     def extract_text(self, path: str) -> str:
         file_path = Path(path)
@@ -27,8 +30,8 @@ class DocumentLoader:
             return self._extract_pdf(file_path)
         if extension == ".docx":
             return self._extract_docx(file_path)
-        if extension == ".xlsx":
-            return self._extract_xlsx(file_path)
+        if extension in {".xlsx", ".xls"}:
+            return self._extract_spreadsheet(file_path)
 
         raise ValueError(f"Formato de archivo no soportado: {extension}")
 
@@ -84,18 +87,21 @@ class DocumentLoader:
                     break
         return "\n".join(parts)
 
-    def _extract_xlsx(self, file_path: Path) -> str:
-        wb = load_workbook(str(file_path), read_only=True, data_only=True)
+    def _extract_spreadsheet(self, file_path: Path) -> str:
+        tables = self.spreadsheet_analyzer.load_workbook_tables(str(file_path))
         parts: list[str] = []
-        for sheet in wb.worksheets:
-            parts.append(f"[Hoja: {sheet.title}]")
-            row_count = 0
-            for row in sheet.iter_rows(values_only=True):
-                values = ["" if value is None else str(value) for value in row]
-                if not any(v.strip() for v in values):
-                    continue
-                parts.append("\t".join(values).rstrip())
-                row_count += 1
-                if row_count >= self.XLSX_MAX_ROWS_PER_SHEET or sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
+        for table in tables:
+            parts.append(f"[Hoja: {table['sheet']}]")
+            parts.append("Columnas detectadas:")
+            parts.append(" | ".join(str(col) for col in table["headers"]))
+            parts.append("")
+            parts.append("Filas:")
+            for row in table["rows"][: self.XLSX_MAX_ROWS_PER_SHEET]:
+                pairs = [f"{header}={row.get(header, '')}" for header in table["headers"]]
+                parts.append(" | ".join(pairs))
+                if sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
                     break
+            parts.append("")
+            if sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
+                break
         return "\n".join(parts)
