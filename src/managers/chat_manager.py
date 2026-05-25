@@ -1,4 +1,5 @@
 import logging
+from typing import Callable
 
 from src.config import settings
 from src.managers.conversation_manager import ConversationManager
@@ -53,4 +54,49 @@ class ChatManager:
             return assistant_text
         except Exception:
             self.logger.exception("No se pudo obtener respuesta de OpenAI.")
+            return self.FALLBACK_ERROR
+
+    def send_message_streaming(
+        self,
+        user_text: str,
+        model: str | None,
+        on_delta: Callable[[str], None],
+        should_cancel: Callable[[], bool] | None,
+    ) -> str:
+        self.conversation_manager.add_user_message(user_text)
+        model_name = settings.normalize_model(model)
+        self.logger.info("Inicio send_message_streaming: modelo=%s", model_name)
+
+        if not self.client.is_configured():
+            assistant_text = self.FALLBACK_NOT_CONFIGURED
+            on_delta(assistant_text)
+            self.conversation_manager.add_assistant_message(assistant_text)
+            self.logger.info("OpenAI no configurado; se devuelve respuesta simulada (streaming).")
+            return assistant_text
+
+        try:
+            messages = self.conversation_manager.get_messages_for_openai()
+            self.logger.info("Streaming a OpenAI: modelo=%s mensajes=%s", model_name, len(messages))
+            assistant_text = self.client.stream_text(
+                messages=messages,
+                model=model_name,
+                on_delta=on_delta,
+                should_cancel=should_cancel,
+            )
+            was_cancelled = bool(callable(should_cancel) and should_cancel())
+            if not assistant_text:
+                if was_cancelled:
+                    self.logger.info("Streaming cancelado sin contenido parcial.")
+                    return ""
+                self.logger.error("OpenAI devolvió una respuesta vacía en streaming.")
+                return self.FALLBACK_ERROR
+
+            if was_cancelled:
+                assistant_text = f"{assistant_text}\n\n[Generación cancelada]"
+                self.logger.info("Streaming cancelado con contenido parcial.")
+
+            self.conversation_manager.add_assistant_message(assistant_text)
+            return assistant_text
+        except Exception:
+            self.logger.exception("No se pudo obtener respuesta de OpenAI en streaming.")
             return self.FALLBACK_ERROR

@@ -28,6 +28,10 @@ class MainWindow:
         self.session_order: list[str] = []
         self.current_session_id: str | None = None
         self.partial_message_start_index: str | None = None
+        self.partial_message_role: str | None = None
+        self.partial_message_created_at: str | None = None
+        self.partial_message_content: str = ""
+        self.cancel_event = threading.Event()
 
         self._configure_root()
         self._build_layout()
@@ -175,6 +179,8 @@ class MainWindow:
 
         self.send_button = ttk.Button(bottom, text="Enviar", command=self._on_send)
         self.send_button.grid(row=0, column=1, sticky="ns")
+        self.cancel_button = ttk.Button(bottom, text="Cancelar", command=self._on_cancel_generation, state=tk.DISABLED)
+        self.cancel_button.grid(row=0, column=2, sticky="ns")
 
     def _load_initial_sessions(self) -> None:
         sessions = self.session_storage.list_sessions()
@@ -301,6 +307,9 @@ class MainWindow:
         self._store_message("user", user_message)
         self.input_text.delete("1.0", tk.END)
         self.send_button.configure(state=tk.DISABLED)
+        self.cancel_button.configure(state=tk.NORMAL)
+        self.cancel_event.clear()
+        self.append_partial_message("assistant", "")
 
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
@@ -310,22 +319,45 @@ class MainWindow:
 
     def _assistant_response_worker(self, user_message: str, model: str) -> None:
         try:
-            response = self.chat_manager.send_message(user_message, model)
+            def on_delta(delta: str) -> None:
+                self.root.after(0, lambda d=delta: self.update_partial_message(d))
+
+            response = self.chat_manager.send_message_streaming(
+                user_text=user_message,
+                model=model,
+                on_delta=on_delta,
+                should_cancel=self.cancel_event.is_set,
+            )
             self.root.after(0, lambda: self._on_worker_success(response))
         except Exception:
             self.logger.exception("Error en worker de asistencia")
             self.root.after(0, self._on_worker_error)
 
     def _on_worker_success(self, response: str) -> None:
+        is_cancelled = self.cancel_event.is_set()
+        if is_cancelled:
+            self.cancel_partial_message()
+        else:
+            self.finish_partial_message()
+
         if response:
-            self.append_assistant_message(response)
             self._store_message("assistant", response)
         self.send_button.configure(state=tk.NORMAL)
+        self.cancel_button.configure(state=tk.DISABLED)
+        self.cancel_event.clear()
 
     def _on_worker_error(self) -> None:
         error_msg = "No se pudo obtener respuesta de OpenAI. Revisa la configuración, el modelo o la conexión."
+        self.cancel_partial_message()
         self.append_system_message(error_msg)
         self.send_button.configure(state=tk.NORMAL)
+        self.cancel_button.configure(state=tk.DISABLED)
+        self.cancel_event.clear()
+
+    def _on_cancel_generation(self) -> None:
+        self.logger.info("Cancelación solicitada por el usuario.")
+        self.cancel_event.set()
+        self.cancel_button.configure(state=tk.DISABLED)
 
     def _store_message(self, role: str, content: str) -> None:
         if not self.current_session_id or not content.strip():
@@ -389,19 +421,70 @@ class MainWindow:
         self.append_message("assistant", content)
 
     def append_partial_message(self, role: str, partial_content: str) -> None:
-        """Prepara el área de chat para streaming incremental futuro sin activarlo aún."""
         if self.partial_message_start_index is None:
+            role_key = role if role in self.ROLE_DISPLAY else "system"
+            label = self.ROLE_DISPLAY.get(role_key, "Sistema")
+            tag = f"header_{role_key}"
+            self.partial_message_role = role_key
+            self.partial_message_created_at = datetime.now(timezone.utc).isoformat()
+            self.partial_message_content = partial_content
+            timestamp = self._format_timestamp(self.partial_message_created_at)
+            self.conversation_text.configure(state=tk.NORMAL)
             self.partial_message_start_index = self.conversation_text.index(tk.END)
-            self.append_message(role, partial_content)
+            self.conversation_text.insert(tk.END, f"[{timestamp}] {label}\n", tag)
+            self.conversation_text.insert(tk.END, f"{self._clean_markdown_basic(partial_content)}\n\n", "body")
+            self.conversation_text.see(tk.END)
+            self.conversation_text.configure(state=tk.DISABLED)
             return
 
-        # Mantiene compatibilidad actual: sustituye el último bloque parcial completo.
         self.conversation_text.configure(state=tk.NORMAL)
         self.conversation_text.delete(self.partial_message_start_index, tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
-        self.append_message(role, partial_content)
+        self.partial_message_start_index = None
+        self.append_partial_message(role, partial_content)
+
+    def update_partial_message(self, delta: str) -> None:
+        if self.partial_message_start_index is None:
+            self.append_partial_message("assistant", "")
+        self.partial_message_content += delta
+        self._redraw_partial_message()
+
+    def _redraw_partial_message(self) -> None:
+        if self.partial_message_start_index is None:
+            return
+        role_key = self.partial_message_role or "assistant"
+        label = self.ROLE_DISPLAY.get(role_key, "PROM-9")
+        tag = f"header_{role_key}"
+        timestamp = self._format_timestamp(self.partial_message_created_at)
+        cleaned_content = self._clean_markdown_basic(self.partial_message_content)
+        self.conversation_text.configure(state=tk.NORMAL)
+        self.conversation_text.delete(self.partial_message_start_index, tk.END)
+        self.conversation_text.insert(tk.END, f"[{timestamp}] {label}\n", tag)
+        self.conversation_text.insert(tk.END, f"{cleaned_content}\n\n", "body")
+        self.conversation_text.see(tk.END)
+        self.conversation_text.configure(state=tk.DISABLED)
 
     def finish_partial_message(self) -> None:
-        """Finaliza un mensaje parcial para futuras respuestas con streaming real."""
+        if self.partial_message_start_index is not None:
+            self._redraw_partial_message()
         self.partial_message_start_index = None
+        self.partial_message_role = None
+        self.partial_message_created_at = None
+        self.partial_message_content = ""
 
+    def cancel_partial_message(self) -> None:
+        if self.partial_message_start_index is None:
+            return
+        if self.partial_message_content.strip():
+            if not self.partial_message_content.endswith("\n"):
+                self.partial_message_content += "\n"
+            self.partial_message_content += "\n[Generación cancelada]"
+            self._redraw_partial_message()
+        else:
+            self.conversation_text.configure(state=tk.NORMAL)
+            self.conversation_text.delete(self.partial_message_start_index, tk.END)
+            self.conversation_text.configure(state=tk.DISABLED)
+        self.partial_message_start_index = None
+        self.partial_message_role = None
+        self.partial_message_created_at = None
+        self.partial_message_content = ""
