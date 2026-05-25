@@ -54,6 +54,7 @@ class AttachmentManager:
         payload = {
             "id": attachment_id,
             "session_id": session_id,
+            "message_id": None,
             "original_name": source.name,
             "stored_path": str(stored_path),
             "extension": extension,
@@ -64,8 +65,9 @@ class AttachmentManager:
         }
         self.session_repository.add_attachment(payload)
         self.logger.info(
-            "Adjunto agregado: session_id=%s archivo=%s tipo=%s bytes=%s chars=%s truncado=%s",
+            "Adjunto agregado como pendiente: session_id=%s attachment_id=%s archivo=%s tipo=%s bytes=%s chars=%s truncado=%s",
             session_id,
+            attachment_id,
             source.name,
             extension,
             size_bytes,
@@ -81,6 +83,22 @@ class AttachmentManager:
         for att in attachments:
             hydrated.append(self._hydrate_attachment_text(session_id, att))
         return hydrated
+
+    def list_pending_attachments(self, session_id: str) -> list[dict]:
+        attachments = self.session_repository.list_pending_attachments(session_id)
+        hydrated: list[dict] = []
+        for att in attachments:
+            hydrated.append(self._hydrate_attachment_text(session_id, att))
+        return hydrated
+
+    def attach_pending_files_to_message(self, session_id: str, message_id: str, attachment_ids: list[str]) -> None:
+        self.session_repository.attach_pending_files_to_message(session_id, message_id, attachment_ids)
+        self.logger.info(
+            "Adjuntos vinculados a mensaje: session_id=%s message_id=%s total=%s",
+            session_id,
+            message_id,
+            len(attachment_ids),
+        )
 
     def _hydrate_attachment_text(self, session_id: str, attachment: dict) -> dict:
         enriched = dict(attachment)

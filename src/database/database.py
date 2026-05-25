@@ -49,6 +49,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                message_id TEXT,
                 original_name TEXT NOT NULL,
                 stored_path TEXT NOT NULL,
                 extension TEXT NOT NULL,
@@ -56,7 +57,8 @@ class Database:
                 extracted_chars INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 extracted_path TEXT,
-                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE SET NULL
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title)",
@@ -64,11 +66,16 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_messages_session_content ON messages(session_id, content)",
             "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)",
             "CREATE INDEX IF NOT EXISTS idx_attachments_session_id ON attachments(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attachments_message_id ON attachments(message_id)",
         ]
         try:
             with self.connect() as conn:
                 for statement in schema:
                     conn.execute(statement)
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
+                if "message_id" not in columns:
+                    conn.execute("ALTER TABLE attachments ADD COLUMN message_id TEXT")
+                    self.logger.info("Migración SQLite: columna attachments.message_id añadida.")
                 conn.commit()
             self.logger.info("Tablas e índices SQLite creados/verificados.")
         except sqlite3.Error:

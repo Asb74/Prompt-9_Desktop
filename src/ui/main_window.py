@@ -37,7 +37,7 @@ class MainWindow:
         self.session_repository = SessionRepository(self.database)
         self.json_migrator = JsonMigrator(self.session_repository)
         self.attachment_manager = AttachmentManager(self.session_repository)
-        self.current_attachments: list[dict] = []
+        self.pending_attachments: list[dict] = []
         self.conversation_exporter = ConversationExporter()
 
         self.sessions_by_id: dict[str, dict] = {}
@@ -298,7 +298,7 @@ class MainWindow:
         attachments_row.grid(row=0, column=0, sticky="ew", pady=(0, 6), padx=(0, 8))
         attachments_row.columnconfigure(1, weight=1)
         ttk.Button(attachments_row, text="Adjuntar", command=self._on_attach_files).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.attachments_label = ttk.Label(attachments_row, text="Adjuntos: (ninguno)")
+        self.attachments_label = ttk.Label(attachments_row, text="Adjuntos pendientes: (ninguno)")
         self.attachments_label.grid(row=0, column=1, sticky="w")
 
         self.input_text = tk.Text(bottom, height=4, wrap=tk.WORD)
@@ -360,7 +360,7 @@ class MainWindow:
         if session_id in self.session_order:
             self.session_order.remove(session_id)
         self.current_session_id = None
-        self.current_attachments = []
+        self.pending_attachments = []
         self._refresh_attachments_ui()
         self._refresh_session_listbox()
 
@@ -456,20 +456,20 @@ class MainWindow:
         self.model_selector.set(session_model)
 
         self.chat_manager.conversation_manager.load_messages(loaded_session.get("messages", []))
-        self.current_attachments = self.attachment_manager.list_attachments(session_id)
+        self.pending_attachments = []
         self._refresh_attachments_ui()
         self._clear_conversation_view()
         for msg in loaded_session.get("messages", []):
-            self.append_message(msg.get("role", "system"), msg.get("content", ""), msg.get("created_at"))
+            self.append_message(msg.get("role", "system"), msg.get("content", ""), msg.get("created_at"), msg.get("attachments", []))
         self.logger.info("Sesión seleccionada: %s", session_id)
 
 
     def _refresh_attachments_ui(self) -> None:
-        if not self.current_attachments:
-            self.attachments_label.configure(text="Adjuntos: (ninguno)")
+        if not self.pending_attachments:
+            self.attachments_label.configure(text="Adjuntos pendientes: (ninguno)")
             return
-        names = [att.get("original_name", "archivo") for att in self.current_attachments]
-        self.attachments_label.configure(text=f"Adjuntos ({len(names)}): " + ", ".join(names[:3]) + ("..." if len(names) > 3 else ""))
+        names = [att.get("original_name", "archivo") for att in self.pending_attachments]
+        self.attachments_label.configure(text=f"Adjuntos pendientes ({len(names)}): " + ", ".join(names[:3]) + ("..." if len(names) > 3 else ""))
 
     def _on_attach_files(self) -> None:
         if not self.current_session_id:
@@ -489,7 +489,7 @@ class MainWindow:
                 self.logger.exception("Error adjuntando archivo: %s", path)
                 messagebox.showerror("Adjuntos", f"No se pudo adjuntar {path}: {exc}", parent=self.root)
 
-        self.current_attachments = self.attachment_manager.list_attachments(self.current_session_id)
+        self.pending_attachments = self.attachment_manager.list_pending_attachments(self.current_session_id)
         self._refresh_attachments_ui()
 
     def _on_session_select(self, event: tk.Event) -> None:
@@ -518,11 +518,27 @@ class MainWindow:
 
     def _on_send(self) -> None:
         user_message = self.input_text.get("1.0", tk.END).strip()
-        if not user_message or not self.current_session_id:
+        if not self.current_session_id:
             return
+        pending_attachments = list(self.pending_attachments)
+        if not user_message and not pending_attachments:
+            return
+        if not user_message and pending_attachments:
+            user_message = f"Archivo adjunto: {pending_attachments[0].get('original_name', 'archivo')}"
+            self.logger.info("Envío con solo adjunto: session_id=%s", self.current_session_id)
 
-        self.append_user_message(user_message)
-        self._store_message("user", user_message)
+        user_saved = self._store_message("user", user_message)
+        if not user_saved:
+            return
+        attachment_ids = [att.get("id") for att in pending_attachments if att.get("id")]
+        if attachment_ids:
+            self.attachment_manager.attach_pending_files_to_message(self.current_session_id, user_saved["id"], attachment_ids)
+            user_saved["attachments"] = pending_attachments
+
+        self.append_message("user", user_message, user_saved.get("created_at"), user_saved.get("attachments", []))
+        self.pending_attachments = []
+        self.logger.info("Limpieza de adjuntos pendientes: session_id=%s", self.current_session_id)
+        self._refresh_attachments_ui()
         self.input_text.delete("1.0", tk.END)
         self.send_button.configure(state=tk.DISABLED)
         self.cancel_button.configure(state=tk.NORMAL)
@@ -532,12 +548,11 @@ class MainWindow:
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
-        session_attachments = self.attachment_manager.list_attachments(self.current_session_id)
-        used_attachments = [att for att in session_attachments if (att.get("extracted_text") or att.get("extracted_path"))]
+        used_attachments = [att for att in pending_attachments if (att.get("extracted_text") or att.get("extracted_path"))]
         document_context = build_document_context(used_attachments)
         context_chars = len(document_context)
         self.logger.info(
-            "Contexto documental preparado: session_id=%s adjuntos=%s chars=%s truncado=%s",
+            "Contexto documental preparado para envío actual: session_id=%s adjuntos=%s chars=%s truncado=%s",
             self.current_session_id,
             len(used_attachments),
             context_chars,
@@ -545,6 +560,7 @@ class MainWindow:
         )
         if used_attachments:
             self.append_system_message(f"Usando {len(used_attachments)} documento(s) adjunto(s).")
+        self.logger.info("Adjuntos enviados a OpenAI: session_id=%s total=%s", self.current_session_id, len(used_attachments))
         worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model, document_context), daemon=True)
         worker.start()
 
@@ -595,14 +611,14 @@ class MainWindow:
         self.cancel_event.set()
         self.cancel_button.configure(state=tk.DISABLED)
 
-    def _store_message(self, role: str, content: str) -> None:
+    def _store_message(self, role: str, content: str) -> dict | None:
         if not self.current_session_id or not content.strip():
-            return
+            return None
         session = self.sessions_by_id[self.current_session_id]
         msg = {"role": role, "content": content, "created_at": datetime.now(timezone.utc).isoformat()}
         saved = self.session_repository.add_message(self.current_session_id, role, content, msg["created_at"])
         if not saved:
-            return
+            return None
         if session.get("title") == "Nueva sesión" and role == "user":
             session["title"] = content[:40]
             self.session_repository.rename_session(self.current_session_id, session["title"])
@@ -610,6 +626,7 @@ class MainWindow:
         if refreshed:
             self.sessions_by_id[self.current_session_id] = refreshed
         self._refresh_session_listbox()
+        return saved
 
     def _clear_conversation_view(self) -> None:
         self.conversation_text.configure(state=tk.NORMAL)
@@ -640,7 +657,7 @@ class MainWindow:
                 pass
         return datetime.now().strftime("%H:%M")
 
-    def append_message(self, role: str, content: str, created_at: str | None = None) -> None:
+    def append_message(self, role: str, content: str, created_at: str | None = None, attachments: list[dict] | None = None) -> None:
         role_key = role if role in self.ROLE_DISPLAY else "system"
         label = self.ROLE_DISPLAY.get(role_key, "Sistema")
         tag = f"header_{role_key}"
@@ -649,7 +666,11 @@ class MainWindow:
 
         self.conversation_text.configure(state=tk.NORMAL)
         self.conversation_text.insert(tk.END, f"[{timestamp}] {label}\n", tag)
-        self.conversation_text.insert(tk.END, f"{cleaned_content}\n\n", "body")
+        if cleaned_content.strip():
+            self.conversation_text.insert(tk.END, f"{cleaned_content}\n", "body")
+        for attachment in attachments or []:
+            self.conversation_text.insert(tk.END, f"📎 {attachment.get('original_name', 'archivo')}\n", "body")
+        self.conversation_text.insert(tk.END, "\n", "body")
         self.conversation_text.see(tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
 
