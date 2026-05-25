@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
+from src.config.settings import normalize_model
 
 
 class MainWindow:
@@ -86,9 +87,17 @@ class MainWindow:
             row=0, column=0, sticky="w"
         )
 
-        model_var = tk.StringVar(value=self.app_context.settings.DEFAULT_MODEL)
-        self.model_selector = ttk.Combobox(top, textvariable=model_var, values=["gpt-4.1-mini", "gpt-4.1"], state="readonly", width=18)
+        default_model = normalize_model(self.app_context.settings.DEFAULT_MODEL)
+        model_var = tk.StringVar(value=default_model)
+        self.model_selector = ttk.Combobox(
+            top,
+            textvariable=model_var,
+            values=self.app_context.settings.AVAILABLE_MODELS,
+            state="readonly",
+            width=18,
+        )
         self.model_selector.grid(row=0, column=1, sticky="e")
+        self.model_selector.set(default_model)
 
     def _build_conversation_area(self, parent: ttk.Frame) -> None:
         conversation_frame = ttk.Frame(parent)
@@ -135,7 +144,8 @@ class MainWindow:
     def _new_session(self) -> None:
         self.chat_manager.reset_conversation()
         self._clear_conversation_view()
-        session = self.session_storage.create_session(model=self.model_selector.get())
+        selected_model = normalize_model(self.model_selector.get())
+        session = self.session_storage.create_session(model=selected_model)
         self.session_storage.save_session(session)
         self._cache_session(session, prepend=True)
         self._refresh_session_listbox()
@@ -166,8 +176,9 @@ class MainWindow:
         self.session_listbox.activate(index)
 
         session = self.sessions_by_id[session_id]
-        if session.get("model"):
-            self.model_selector.set(session["model"])
+        session_model = normalize_model(session.get("model"))
+        session["model"] = session_model
+        self.model_selector.set(session_model)
 
         self.chat_manager.reset_conversation()
         self.chat_manager.conversation_manager.load_messages(session.get("messages", []))
@@ -199,7 +210,8 @@ class MainWindow:
         self.input_text.delete("1.0", tk.END)
         self.send_button.configure(state=tk.DISABLED)
 
-        model = self.model_selector.get()
+        model = normalize_model(self.model_selector.get())
+        self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
         worker = threading.Thread(
             target=self._assistant_response_worker,

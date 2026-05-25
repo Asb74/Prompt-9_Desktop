@@ -1,6 +1,6 @@
 import logging
 
-from src.config.settings import OPENAI_API_KEY
+from src.config.settings import OPENAI_API_KEY, normalize_model
 from src.managers.conversation_manager import ConversationManager
 from src.services.openai_client import OpenAIClient
 
@@ -21,8 +21,10 @@ class ChatManager:
     def reset_conversation(self) -> None:
         self.conversation_manager.reset()
 
-    def send_message(self, user_text: str, model: str) -> str:
+    def send_message(self, user_text: str, model: str | None) -> str:
         self.conversation_manager.add_user_message(user_text)
+        model_name = normalize_model(model)
+        self.logger.info("Modelo normalizado para envío: %s", model_name)
 
         if not self.client.is_configured():
             assistant_text = self.FALLBACK_NOT_CONFIGURED
@@ -32,8 +34,8 @@ class ChatManager:
 
         try:
             messages = self.conversation_manager.get_messages_for_openai()
-            self.logger.info("Enviando %s mensajes a OpenAI con modelo %s", len(messages), model)
-            assistant_text = self.client.generate_text(messages=messages, model=model)
+            self.logger.info("Enviando %s mensajes a OpenAI con modelo %s", len(messages), model_name)
+            assistant_text = self.client.generate_text(messages=messages, model=model_name)
             if not assistant_text:
                 self.logger.error("OpenAI devolvió una respuesta vacía.")
                 return self.FALLBACK_ERROR
