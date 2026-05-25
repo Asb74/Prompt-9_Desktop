@@ -9,7 +9,7 @@ from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
 from src.services.export_service import ExportService
-from src.ui.settings_window import SettingsWindow
+from src.ui.settings_dialog import SettingsDialog
 
 
 class MainWindow:
@@ -20,7 +20,14 @@ class MainWindow:
         self.app_context = app_context
         self.logger = logging.getLogger(__name__)
 
-        self.chat_manager = ChatManager()
+        current = self.app_context.settings.effective_settings()
+        self.chat_manager = ChatManager(streaming_enabled=bool(current["streaming_enabled"]))
+        self.chat_manager.update_runtime_settings(
+            system_prompt=str(current["system_prompt"]),
+            max_context_messages=int(current["max_context_messages"]),
+            streaming_enabled=bool(current["streaming_enabled"]),
+            api_key=self.app_context.settings.resolve_api_key(),
+        )
         self.session_storage = SessionStorage()
         self.export_service = ExportService()
 
@@ -140,7 +147,7 @@ class MainWindow:
         messagebox.showerror("Exportar", "No se pudo exportar la conversación.", parent=self.root)
 
     def _open_settings_window(self) -> None:
-        SettingsWindow(self.root, self._on_settings_saved)
+        SettingsDialog(self.root, self._on_settings_saved)
 
     def _on_settings_saved(self, payload: dict[str, object]) -> None:
         model = normalize_model(str(payload.get("default_model", "")))
@@ -149,9 +156,10 @@ class MainWindow:
         self.chat_manager.update_runtime_settings(
             system_prompt=str(payload.get("system_prompt", self.app_context.settings.SYSTEM_PROMPT)),
             max_context_messages=int(payload.get("max_context_messages", self.app_context.settings.MAX_CONTEXT_MESSAGES)),
-            api_key=self.app_context.settings.resolve_api_key(str(payload.get("openai_api_key", ""))),
+            streaming_enabled=bool(payload.get("streaming_enabled", self.chat_manager.streaming_enabled)),
+            api_key=self.app_context.settings.resolve_api_key(),
         )
-        self.logger.info("Configuración actualizada desde ventana de ajustes.")
+        self.logger.info("Cambios de configuración aplicados en sesión actual.")
 
     def _build_conversation_area(self, parent: ttk.Frame) -> None:
         conversation_frame = ttk.Frame(parent)
@@ -324,12 +332,16 @@ class MainWindow:
             def on_delta(delta: str) -> None:
                 self.root.after(0, lambda d=delta: self.update_partial_message(d))
 
-            response = self.chat_manager.send_message_streaming(
-                user_text=user_message,
-                model=model,
-                on_delta=on_delta,
-                should_cancel=self.cancel_event.is_set,
-            )
+            if self.chat_manager.streaming_enabled:
+                response = self.chat_manager.send_message_streaming(
+                    user_text=user_message,
+                    model=model,
+                    on_delta=on_delta,
+                    should_cancel=self.cancel_event.is_set,
+                )
+            else:
+                response = self.chat_manager.send_message(user_text=user_message, model=model)
+                self.root.after(0, lambda r=response: self.update_partial_message(r))
             self.root.after(0, lambda: self._on_worker_success(response))
         except Exception:
             self.logger.exception("Error en worker de asistencia")
