@@ -1,8 +1,9 @@
 import tkinter as tk
 import logging
 import threading
-import time
 from tkinter import ttk
+
+from src.managers.chat_manager import ChatManager
 
 
 class MainWindow:
@@ -10,6 +11,8 @@ class MainWindow:
         self.root = root
         self.app_context = app_context
         self.logger = logging.getLogger(__name__)
+
+        self.chat_manager = ChatManager()
 
         self._configure_root()
         self._build_layout()
@@ -118,19 +121,20 @@ class MainWindow:
         self.input_text.delete("1.0", tk.END)
         self.send_button.configure(state=tk.DISABLED)
 
+        model = self.model_selector.get()
         worker = threading.Thread(
-            target=self._simulate_assistant_response_worker,
+            target=self._assistant_response_worker,
+            args=(user_message, model),
             daemon=True,
         )
         worker.start()
 
-    def _simulate_assistant_response_worker(self) -> None:
+    def _assistant_response_worker(self, user_message: str, model: str) -> None:
         try:
-            time.sleep(0.5)
-            response = "Respuesta simulada. La integración OpenAI se añadirá en una fase posterior."
+            response = self.chat_manager.send_message(user_message, model)
             self.root.after(0, lambda: self._on_worker_success(response))
         except Exception as exc:
-            self.logger.exception("Error en worker simulado: %s", exc)
+            self.logger.exception("Error en worker de asistencia: %s", exc)
             self.root.after(0, self._on_worker_error)
 
     def _on_worker_success(self, response: str) -> None:
