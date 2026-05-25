@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Callable, Optional
 
 from openai import OpenAI
 
@@ -52,8 +52,8 @@ class OpenAIClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        on_delta: callable,
-        should_cancel: callable | None = None,
+        on_delta: Callable[[str], None],
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> str:
         if not self.client:
             return ""
