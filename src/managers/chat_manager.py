@@ -47,7 +47,12 @@ class ChatManager:
 
         try:
             messages = self.conversation_manager.get_messages_for_openai(document_context=document_context)
-            self.logger.info("Enviando %s mensajes a OpenAI con modelo %s", len(messages), model_name)
+            self.logger.info(
+                "Enviando %s mensajes a OpenAI con modelo %s (contexto_doc_chars=%s)",
+                len(messages),
+                model_name,
+                len((document_context or "").strip()),
+            )
             assistant_text = self.client.generate_text(messages=messages, model=model_name)
             if not assistant_text:
                 self.logger.error("OpenAI devolvió una respuesta vacía.")
@@ -80,7 +85,12 @@ class ChatManager:
 
         try:
             messages = self.conversation_manager.get_messages_for_openai(document_context=document_context)
-            self.logger.info("Streaming a OpenAI: modelo=%s mensajes=%s", model_name, len(messages))
+            self.logger.info(
+                "Streaming a OpenAI: modelo=%s mensajes=%s contexto_doc_chars=%s",
+                model_name,
+                len(messages),
+                len((document_context or "").strip()),
+            )
             assistant_text = self.client.stream_text(
                 messages=messages,
                 model=model_name,
