@@ -3,11 +3,12 @@ import re
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
+from src.services.export_service import ExportService
 from src.ui.settings_window import SettingsWindow
 
 
@@ -21,6 +22,7 @@ class MainWindow:
 
         self.chat_manager = ChatManager()
         self.session_storage = SessionStorage()
+        self.export_service = ExportService()
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
@@ -94,8 +96,42 @@ class MainWindow:
         )
         self.model_selector.grid(row=0, column=1, sticky="e")
         self.model_selector.set(default_model)
-        ttk.Button(top, text="Configuración", command=self._open_settings_window).grid(row=0, column=2, padx=(8, 0), sticky="e")
+        ttk.Button(top, text="Exportar", command=self._export_current_session).grid(row=0, column=2, padx=(8, 0), sticky="e")
+        ttk.Button(top, text="Configuración", command=self._open_settings_window).grid(row=0, column=3, padx=(8, 0), sticky="e")
 
+
+    def _export_current_session(self) -> None:
+        if not self.current_session_id:
+            messagebox.showwarning("Exportar", "No hay una sesión activa para exportar.", parent=self.root)
+            return
+
+        session = self.sessions_by_id.get(self.current_session_id)
+        if not session:
+            messagebox.showwarning("Exportar", "No hay una sesión activa para exportar.", parent=self.root)
+            return
+
+        output_path = filedialog.asksaveasfilename(
+            title="Exportar conversación",
+            defaultextension=".txt",
+            filetypes=[("Texto", "*.txt"), ("Markdown", "*.md")],
+            parent=self.root,
+        )
+        if not output_path:
+            return
+
+        self.logger.info("Exportación iniciada: sesión=%s destino=%s", self.current_session_id, output_path)
+        if output_path.lower().endswith(".md"):
+            ok = self.export_service.export_session_to_markdown(session, output_path)
+        else:
+            ok = self.export_service.export_session_to_txt(session, output_path)
+
+        if ok:
+            self.logger.info("Exportación completada: sesión=%s destino=%s", self.current_session_id, output_path)
+            messagebox.showinfo("Exportar", "Conversación exportada correctamente.", parent=self.root)
+            return
+
+        self.logger.error("Error exportando sesión=%s destino=%s", self.current_session_id, output_path)
+        messagebox.showerror("Exportar", "No se pudo exportar la conversación.", parent=self.root)
 
     def _open_settings_window(self) -> None:
         SettingsWindow(self.root, self._on_settings_saved)
@@ -351,3 +387,21 @@ class MainWindow:
 
     def append_assistant_message(self, content: str) -> None:
         self.append_message("assistant", content)
+
+    def append_partial_message(self, role: str, partial_content: str) -> None:
+        """Prepara el área de chat para streaming incremental futuro sin activarlo aún."""
+        if self.partial_message_start_index is None:
+            self.partial_message_start_index = self.conversation_text.index(tk.END)
+            self.append_message(role, partial_content)
+            return
+
+        # Mantiene compatibilidad actual: sustituye el último bloque parcial completo.
+        self.conversation_text.configure(state=tk.NORMAL)
+        self.conversation_text.delete(self.partial_message_start_index, tk.END)
+        self.conversation_text.configure(state=tk.DISABLED)
+        self.append_message(role, partial_content)
+
+    def finish_partial_message(self) -> None:
+        """Finaliza un mensaje parcial para futuras respuestas con streaming real."""
+        self.partial_message_start_index = None
+
