@@ -62,6 +62,7 @@ class AttachmentManager:
             "extracted_chars": len(limited_text),
             "created_at": created_at,
             "extracted_path": str(extracted_path),
+            "extracted_text_path": str(extracted_path),
         }
         self.session_repository.add_attachment(payload)
         self.logger.info(
@@ -91,6 +92,13 @@ class AttachmentManager:
             hydrated.append(self._hydrate_attachment_text(session_id, att))
         return hydrated
 
+    def list_recent_message_attachments(self, session_id: str, limit: int = 3) -> list[dict]:
+        attachments = self.session_repository.list_recent_message_attachments(session_id=session_id, limit=limit)
+        hydrated: list[dict] = []
+        for att in attachments:
+            hydrated.append(self._hydrate_attachment_text(session_id, att))
+        return hydrated
+
     def attach_pending_files_to_message(self, session_id: str, message_id: str, attachment_ids: list[str]) -> None:
         self.session_repository.attach_pending_files_to_message(session_id, message_id, attachment_ids)
         self.logger.info(
@@ -104,6 +112,7 @@ class AttachmentManager:
         enriched = dict(attachment)
         extracted_text = ""
         extracted_path = enriched.get("extracted_path")
+        enriched["extracted_text_path"] = extracted_path
 
         if extracted_path:
             extracted_file = Path(extracted_path)
@@ -122,6 +131,7 @@ class AttachmentManager:
                         extracted_file = session_dir / f"{enriched.get('id', uuid4())}_extracted.txt"
                         extracted_file.write_text(extracted_text, encoding="utf-8")
                         enriched["extracted_path"] = str(extracted_file)
+                        enriched["extracted_text_path"] = str(extracted_file)
                         self.logger.info(
                             "Texto extraído regenerado para adjunto id=%s chars=%s truncado=%s",
                             enriched.get("id"),

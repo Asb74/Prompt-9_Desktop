@@ -13,6 +13,7 @@ DEFAULT_MODEL = "gpt-4.1-mini"
 AVAILABLE_MODELS = ["gpt-4.1-mini", "gpt-4o-mini"]
 MAX_ATTACHMENT_MB = 20
 MAX_DOCUMENT_CHARS = 20000
+RECENT_ATTACHMENT_CONTEXT_LIMIT = 3
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".xlsx", ".csv"}
 
 MAX_CONTEXT_MESSAGES = 20
