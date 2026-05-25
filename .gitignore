@@ -80,3 +80,5 @@ htmlcov/
 # si deseas versionar iconos, branding,
 # imágenes o documentos.
 assets/
+
+!.env.example
