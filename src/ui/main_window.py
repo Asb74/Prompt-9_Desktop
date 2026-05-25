@@ -447,22 +447,20 @@ class MainWindow:
     def update_partial_message(self, delta: str) -> None:
         if self.partial_message_start_index is None:
             self.append_partial_message("assistant", "")
-        self.partial_message_content += delta
-        self._redraw_partial_message()
-
-    def _redraw_partial_message(self) -> None:
-        if not self._partial_message_active or self.partial_message_body_index is None:
+        if not self._partial_message_active or not delta:
             return
-        cleaned_content = self._clean_markdown_basic(self.partial_message_content)
+        cleaned_delta = self._clean_markdown_basic(delta)
+        self.partial_message_content += delta
         self.conversation_text.configure(state=tk.NORMAL)
-        self.conversation_text.delete(self.partial_message_body_index, tk.END)
-        self.conversation_text.insert(tk.END, f"{cleaned_content}\n\n", "body")
+        self.conversation_text.insert(tk.END, cleaned_delta, "body")
         self.conversation_text.see(tk.END)
         self.conversation_text.configure(state=tk.DISABLED)
 
     def finish_partial_message(self) -> None:
         if self._partial_message_active:
-            self._redraw_partial_message()
+            self.conversation_text.configure(state=tk.NORMAL)
+            self.conversation_text.insert(tk.END, "\n\n", "body")
+            self.conversation_text.configure(state=tk.DISABLED)
         self._partial_message_active = False
         self.partial_message_start_index = None
         self.partial_message_body_index = None
@@ -474,10 +472,12 @@ class MainWindow:
         if not self._partial_message_active:
             return
         if self.partial_message_content.strip():
-            if not self.partial_message_content.endswith("\n"):
-                self.partial_message_content += "\n"
-            self.partial_message_content += "\n[Generación cancelada]"
-            self._redraw_partial_message()
+            cancel_notice = "\n\n[Generación cancelada]"
+            self.partial_message_content += cancel_notice
+            self.conversation_text.configure(state=tk.NORMAL)
+            self.conversation_text.insert(tk.END, cancel_notice, "body")
+            self.conversation_text.insert(tk.END, "\n\n", "body")
+            self.conversation_text.configure(state=tk.DISABLED)
         else:
             self.conversation_text.configure(state=tk.NORMAL)
             if self.partial_message_start_index is not None:
