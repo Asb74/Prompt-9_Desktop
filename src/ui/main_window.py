@@ -15,7 +15,10 @@ from src.database.session_repository import SessionRepository
 from src.services.text_chunker import build_document_context
 from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
-from src.services.spreadsheet_analyzer import SpreadsheetAnalyzer
+from src.services.table_loader import TableLoader
+from src.services.table_schema_detector import detect_semantic_columns
+from src.services.query_intent_detector import QueryIntentDetector
+from src.services.table_analysis_engine import TableAnalysisEngine
 
 
 class MainWindow:
@@ -45,7 +48,9 @@ class MainWindow:
         self.attachment_manager = AttachmentManager(self.session_repository)
         self.pending_attachments: list[dict] = []
         self.conversation_exporter = ConversationExporter()
-        self.spreadsheet_analyzer = SpreadsheetAnalyzer()
+        self.table_loader = TableLoader()
+        self.query_intent_detector = QueryIntentDetector()
+        self.table_analysis_engine = TableAnalysisEngine()
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
@@ -616,46 +621,57 @@ class MainWindow:
         worker.start()
 
     def _build_local_spreadsheet_context(self, user_message: str, attachments: list[dict]) -> str:
-        if not self._looks_like_group_query(user_message):
+        intent = self.query_intent_detector.detect(user_message)
+        if not intent:
             return ""
 
-        excel_attachments = [a for a in attachments if a.get("extension", "").lower() in {".xlsx", ".xls"}]
-        if not excel_attachments:
+        table_attachments = [
+            a for a in attachments if a.get("extension", "").lower() in {".xlsx", ".xls", ".csv"}
+        ]
+        if not table_attachments:
             return ""
 
-        self._set_status("Analizando Excel...")
-        latest = sorted(excel_attachments, key=lambda a: a.get("created_at", ""), reverse=True)[0]
+        latest = sorted(table_attachments, key=lambda a: a.get("created_at", ""), reverse=True)[0]
         stored_path = latest.get("stored_path")
         if not stored_path:
             return ""
 
         try:
-            self.logger.info("Análisis local de Excel iniciado: archivo=%s", latest.get("original_name"))
-            result = self.spreadsheet_analyzer.aggregate_by_column(str(stored_path), "variedad", "neto")
-            if not result:
-                self.logger.info("Análisis local de Excel sin resultados agregados.")
+            self._set_status("Analizando tabla...")
+            tables = self.table_loader.load_tables(str(stored_path))
+            if not tables:
                 return ""
-            total = sum(result.values())
-            lines = ["Resultado calculado localmente:"]
-            for key, value in result.items():
-                lines.append(f"{key}: {value:.2f} kg")
-            lines.append(f"Total: {total:.2f} kg")
-            lines.append("Instrucción al modelo: Usa estos resultados calculados localmente. No digas que no puedes leer el archivo.")
-            self.logger.info(
-                "Análisis local completado: columnas=variedad/neto filas_grupo=%s grupos=%s",
-                len(result),
-                result,
-            )
+
+            self.logger.info("Table analysis: hojas_detectadas=%s", len(tables))
+            headers = []
+            rows_processed = 0
+            for table in tables:
+                headers.extend(table.get("headers", []))
+                rows_processed += len(table.get("rows", []))
+
+            self._set_status("Detectando columnas...")
+            semantic_columns = detect_semantic_columns(headers)
+            self.logger.info("Table analysis: filas_procesadas=%s columnas_detectadas=%s", rows_processed, semantic_columns)
+            self.logger.info("Table analysis: intencion_detectada=%s", intent)
+
+            self._set_status("Calculando resultados...")
+            result = self.table_analysis_engine.run(tables, semantic_columns, intent)
+            if not result:
+                return ""
+
+            self.logger.info("Table analysis: operacion_ejecutada=%s", intent.get("operation"))
             self._set_status("Generando respuesta...")
+            lines = ["Resultado calculado localmente (determinista):"]
+            if isinstance(result, dict):
+                for key, value in result.items():
+                    lines.append(f"- {key}: {value}")
+            else:
+                lines.append(str(result))
+            lines.append("Instrucción al modelo: Usa estos resultados ya calculados. No recalcules ni digas que no puedes analizar el archivo.")
             return "\n".join(lines)
         except Exception:
-            self.logger.exception("Error en análisis local de Excel")
+            self.logger.exception("Error en motor genérico de análisis tabular")
             return ""
-
-    def _looks_like_group_query(self, text: str) -> bool:
-        normalized = text.lower()
-        terms = ["kg", "kilos", "neto", "variedad", "agrupado"]
-        return sum(1 for term in terms if term in normalized) >= 3
 
     def _assistant_response_worker(self, user_message: str, model: str, document_context: str) -> None:
         try:
