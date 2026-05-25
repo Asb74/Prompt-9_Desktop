@@ -1,1 +1,82 @@
-/assets
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Runtime / local data
+# =========================
+data/
+*.db
+*.sqlite3
+
+# =========================
+# IDEs
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Windows
+# =========================
+Thumbs.db
+desktop.ini
+
+# =========================
+# Local config
+# =========================
+config.local.json
+
+# =========================
+# Build / distribution
+# =========================
+build/
+dist/
+*.spec
+
+# =========================
+# Testing / cache
+# =========================
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# =========================
+# Binary assets protection
+# =========================
+*.psd
+*.ai
+
+# =========================
+# Assets
+# =========================
+# IMPORTANTE:
+# assets/ queda ignorado temporalmente
+# para evitar conflictos con binarios
+# durante el arranque del proyecto.
+#
+# Más adelante puedes quitar esta línea
+# si deseas versionar iconos, branding,
+# imágenes o documentos.
+assets/
