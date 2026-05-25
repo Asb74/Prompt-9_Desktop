@@ -30,6 +30,8 @@ class DocumentLoader:
             return self._extract_pdf(file_path)
         if extension == ".docx":
             return self._extract_docx(file_path)
+        if extension == ".doc":
+            return self._extract_doc(file_path)
         if extension in {".xlsx", ".xls"}:
             return self._extract_spreadsheet(file_path)
 
@@ -86,6 +88,29 @@ class DocumentLoader:
                 if sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
                     break
         return "\n".join(parts)
+
+
+    def _extract_doc(self, file_path: Path) -> str:
+        self.logger.info("Archivo .doc detectado: %s", file_path.name)
+        converted_path = self.convert_doc_to_docx(file_path)
+        if converted_path is not None and converted_path.exists():
+            try:
+                return self._extract_docx(converted_path)
+            finally:
+                if converted_path != file_path and converted_path.exists():
+                    try:
+                        converted_path.unlink()
+                    except OSError:
+                        self.logger.warning("No se pudo eliminar archivo temporal convertido: %s", converted_path)
+
+        raise ValueError(
+            "El formato .doc antiguo está permitido, pero requiere conversión previa a .docx para extraer texto correctamente."
+        )
+
+    def convert_doc_to_docx(self, file_path: Path) -> Path | None:
+        """Punto de extensión opcional para convertir .doc a .docx en entornos con Word/LibreOffice."""
+        self.logger.info("Conversión .doc -> .docx no configurada en este entorno: %s", file_path.name)
+        return None
 
     def _extract_spreadsheet(self, file_path: Path) -> str:
         tables = self.spreadsheet_analyzer.load_workbook_tables(str(file_path))

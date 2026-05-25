@@ -494,7 +494,7 @@ class MainWindow:
             return
         paths = filedialog.askopenfilenames(
             title="Adjuntar documentos",
-            filetypes=[("Documentos soportados", "*.txt *.csv *.pdf *.docx *.xlsx")],
+            filetypes=[("Documentos soportados", "*.txt *.csv *.pdf *.doc *.docx *.xls *.xlsx")],
             parent=self.root,
         )
         if not paths:
