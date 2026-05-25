@@ -8,6 +8,7 @@ from tkinter import messagebox, simpledialog, ttk
 from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
 from src.managers.session_storage import SessionStorage
+from src.ui.settings_window import SettingsWindow
 
 
 class MainWindow:
@@ -93,6 +94,22 @@ class MainWindow:
         )
         self.model_selector.grid(row=0, column=1, sticky="e")
         self.model_selector.set(default_model)
+        ttk.Button(top, text="Configuración", command=self._open_settings_window).grid(row=0, column=2, padx=(8, 0), sticky="e")
+
+
+    def _open_settings_window(self) -> None:
+        SettingsWindow(self.root, self._on_settings_saved)
+
+    def _on_settings_saved(self, payload: dict[str, object]) -> None:
+        model = normalize_model(str(payload.get("default_model", "")))
+        self.model_selector.configure(values=self.app_context.settings.AVAILABLE_MODELS)
+        self.model_selector.set(model)
+        self.chat_manager.update_runtime_settings(
+            system_prompt=str(payload.get("system_prompt", self.app_context.settings.SYSTEM_PROMPT)),
+            max_context_messages=int(payload.get("max_context_messages", self.app_context.settings.MAX_CONTEXT_MESSAGES)),
+            api_key=self.app_context.settings.resolve_api_key(str(payload.get("openai_api_key", ""))),
+        )
+        self.logger.info("Configuración actualizada desde ventana de ajustes.")
 
     def _build_conversation_area(self, parent: ttk.Frame) -> None:
         conversation_frame = ttk.Frame(parent)
