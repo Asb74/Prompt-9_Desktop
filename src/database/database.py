@@ -45,7 +45,9 @@ class Database:
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
             """,
+            "CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title)",
             "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_messages_session_content ON messages(session_id, content)",
             "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)",
         ]
         try:

@@ -27,6 +27,97 @@ class SessionRepository:
             rows = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
         return [dict(row) for row in rows]
 
+    def count_messages(self, session_id: str) -> int:
+        try:
+            with self.database.connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM messages WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            return int(row["total"]) if row else 0
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite al contar mensajes de sesión=%s", session_id)
+            return 0
+
+    def list_sessions_with_stats(self) -> list[dict]:
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.title,
+                        s.created_at,
+                        s.updated_at,
+                        s.model,
+                        COUNT(m.id) AS message_count
+                    FROM sessions s
+                    LEFT JOIN messages m ON m.session_id = s.id
+                    GROUP BY s.id, s.title, s.created_at, s.updated_at, s.model
+                    ORDER BY s.updated_at DESC
+                    """
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite al listar sesiones con estadísticas.")
+            return []
+
+    def search_sessions(self, query: str = "", date_filter: str = "all") -> list[dict]:
+        normalized_query = (query or "").strip()
+        normalized_filter = (date_filter or "all").strip().lower()
+        if normalized_filter not in {"all", "today", "week", "month"}:
+            normalized_filter = "all"
+
+        params: list[str] = []
+        where_clauses: list[str] = []
+
+        if normalized_filter == "today":
+            where_clauses.append("datetime(s.updated_at) >= datetime('now', 'start of day')")
+        elif normalized_filter == "week":
+            where_clauses.append("datetime(s.updated_at) >= datetime('now', '-7 days')")
+        elif normalized_filter == "month":
+            where_clauses.append("datetime(s.updated_at) >= datetime('now', '-30 days')")
+
+        if normalized_query:
+            like_term = f"%{normalized_query}%"
+            where_clauses.append("(s.title LIKE ? COLLATE NOCASE OR m.content LIKE ? COLLATE NOCASE)")
+            params.extend([like_term, like_term])
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        sql = f"""
+            SELECT
+                s.id,
+                s.title,
+                s.created_at,
+                s.updated_at,
+                s.model,
+                COUNT(DISTINCT m_all.id) AS message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            LEFT JOIN messages m_all ON m_all.session_id = s.id
+            {where_sql}
+            GROUP BY s.id, s.title, s.created_at, s.updated_at, s.model
+            ORDER BY s.updated_at DESC
+        """
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+            results = [dict(row) for row in rows]
+            self.logger.info(
+                "Búsqueda de sesiones: query='%s' filtro='%s' resultados=%s",
+                normalized_query,
+                normalized_filter,
+                len(results),
+            )
+            return results
+        except sqlite3.Error:
+            self.logger.exception(
+                "Error SQLite al buscar sesiones: query='%s' filtro='%s'",
+                normalized_query,
+                normalized_filter,
+            )
+            return []
+
     def create_session(self, model: str, title: str = "Nueva sesión") -> dict:
         now = self._now_iso()
         session = {
