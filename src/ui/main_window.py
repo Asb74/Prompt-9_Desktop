@@ -7,7 +7,9 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from src.config.settings import normalize_model
 from src.managers.chat_manager import ChatManager
-from src.managers.session_storage import SessionStorage
+from src.database.database import Database
+from src.database.json_migrator import JsonMigrator
+from src.database.session_repository import SessionRepository
 from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
 
@@ -28,7 +30,10 @@ class MainWindow:
             streaming_enabled=bool(current["streaming_enabled"]),
             api_key=self.app_context.settings.resolve_api_key(),
         )
-        self.session_storage = SessionStorage()
+        self.database = Database()
+        self.database.initialize()
+        self.session_repository = SessionRepository(self.database)
+        self.json_migrator = JsonMigrator(self.session_repository)
         self.conversation_exporter = ConversationExporter()
 
         self.sessions_by_id: dict[str, dict] = {}
@@ -124,7 +129,7 @@ class MainWindow:
             return
 
         self._save_current_session_if_needed()
-        session = self.session_storage.load_session(self.current_session_id) or session
+        session = self.session_repository.get_session(self.current_session_id) or session
 
         normalized_format = self._prompt_export_format()
         if not normalized_format:
@@ -274,7 +279,8 @@ class MainWindow:
         self.cancel_button.grid(row=0, column=2, sticky="ns")
 
     def _load_initial_sessions(self) -> None:
-        sessions = self.session_storage.list_sessions()
+        self.json_migrator.migrate()
+        sessions = self.session_repository.list_sessions()
         for session in sessions:
             self._cache_session(session)
 
@@ -289,8 +295,7 @@ class MainWindow:
     def _new_session(self) -> None:
         self._save_current_session_if_needed()
         selected_model = normalize_model(self.model_selector.get())
-        session = self.session_storage.create_session(model=selected_model)
-        self.session_storage.save_session(session)
+        session = self.session_repository.create_session(model=selected_model)
         self._cache_session(session, prepend=True)
         self._refresh_session_listbox()
         self._select_session(session["id"])
@@ -302,7 +307,8 @@ class MainWindow:
         new_title = simpledialog.askstring("Renombrar sesión", "Nuevo nombre:", initialvalue=current_title, parent=self.root)
         if not new_title or not new_title.strip():
             return
-        updated = self.session_storage.rename_session(self.current_session_id, new_title)
+        self.session_repository.rename_session(self.current_session_id, new_title)
+        updated = self.session_repository.get_session(self.current_session_id)
         if not updated:
             return
         self.sessions_by_id[self.current_session_id] = updated
@@ -317,7 +323,7 @@ class MainWindow:
         if not messagebox.askyesno("Eliminar sesión", f"¿Eliminar la sesión '{title}'?", parent=self.root):
             return
 
-        self.session_storage.delete_session(session_id)
+        self.session_repository.delete_session(session_id)
         self.sessions_by_id.pop(session_id, None)
         if session_id in self.session_order:
             self.session_order.remove(session_id)
@@ -346,7 +352,7 @@ class MainWindow:
             self.session_listbox.insert(tk.END, title)
 
     def _select_session(self, session_id: str) -> None:
-        loaded_session = self.session_storage.load_session(session_id) or self.sessions_by_id.get(session_id)
+        loaded_session = self.session_repository.get_session(session_id) or self.sessions_by_id.get(session_id)
         if not loaded_session:
             return
         self.sessions_by_id[session_id] = loaded_session
@@ -383,7 +389,7 @@ class MainWindow:
         if not session:
             return
         session["model"] = normalize_model(self.model_selector.get())
-        self.session_storage.save_session(session)
+        self.session_repository.save_session(session)
 
     def _on_ctrl_enter(self, event: tk.Event) -> str:
         self._on_send()
@@ -459,10 +465,16 @@ class MainWindow:
             return
         session = self.sessions_by_id[self.current_session_id]
         msg = {"role": role, "content": content, "created_at": datetime.now(timezone.utc).isoformat()}
-        session.setdefault("messages", []).append(msg)
-        self.session_storage.update_session_title_from_first_user_message(session)
+        saved = self.session_repository.add_message(self.current_session_id, role, content, msg["created_at"])
+        if not saved:
+            return
+        if session.get("title") == "Nueva sesión" and role == "user":
+            session["title"] = content[:40]
+            self.session_repository.rename_session(self.current_session_id, session["title"])
+        refreshed = self.session_repository.get_session(self.current_session_id)
+        if refreshed:
+            self.sessions_by_id[self.current_session_id] = refreshed
         self._refresh_session_listbox()
-        self.session_storage.save_session(session)
 
     def _clear_conversation_view(self) -> None:
         self.conversation_text.configure(state=tk.NORMAL)
