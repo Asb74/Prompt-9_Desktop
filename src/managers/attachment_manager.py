@@ -76,7 +76,45 @@ class AttachmentManager:
         return payload
 
     def list_attachments(self, session_id: str) -> list[dict]:
-        return self.session_repository.list_attachments(session_id)
+        attachments = self.session_repository.list_attachments(session_id)
+        hydrated: list[dict] = []
+        for att in attachments:
+            hydrated.append(self._hydrate_attachment_text(session_id, att))
+        return hydrated
+
+    def _hydrate_attachment_text(self, session_id: str, attachment: dict) -> dict:
+        enriched = dict(attachment)
+        extracted_text = ""
+        extracted_path = enriched.get("extracted_path")
+
+        if extracted_path:
+            extracted_file = Path(extracted_path)
+            if extracted_file.exists():
+                extracted_text = extracted_file.read_text(encoding="utf-8", errors="replace")
+
+        if not extracted_text:
+            stored_path = enriched.get("stored_path")
+            if stored_path and Path(stored_path).exists():
+                try:
+                    raw_text = self.document_loader.extract_text(str(stored_path))
+                    extracted_text, was_truncated = truncate_text(raw_text, int(settings.MAX_DOCUMENT_CHARS))
+                    if extracted_text:
+                        session_dir = attachments_dir() / session_id
+                        session_dir.mkdir(parents=True, exist_ok=True)
+                        extracted_file = session_dir / f"{enriched.get('id', uuid4())}_extracted.txt"
+                        extracted_file.write_text(extracted_text, encoding="utf-8")
+                        enriched["extracted_path"] = str(extracted_file)
+                        self.logger.info(
+                            "Texto extraído regenerado para adjunto id=%s chars=%s truncado=%s",
+                            enriched.get("id"),
+                            len(extracted_text),
+                            was_truncated,
+                        )
+                except Exception:
+                    self.logger.exception("No se pudo regenerar texto extraído para adjunto id=%s", enriched.get("id"))
+
+        enriched["extracted_text"] = extracted_text
+        return enriched
 
     def remove_attachment(self, attachment_id: str) -> None:
         self.session_repository.delete_attachment(attachment_id)

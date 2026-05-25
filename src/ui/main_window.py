@@ -532,7 +532,19 @@ class MainWindow:
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
-        document_context = build_document_context(self.current_attachments)
+        session_attachments = self.attachment_manager.list_attachments(self.current_session_id)
+        used_attachments = [att for att in session_attachments if (att.get("extracted_text") or att.get("extracted_path"))]
+        document_context = build_document_context(used_attachments)
+        context_chars = len(document_context)
+        self.logger.info(
+            "Contexto documental preparado: session_id=%s adjuntos=%s chars=%s truncado=%s",
+            self.current_session_id,
+            len(used_attachments),
+            context_chars,
+            "sí" if "[Contenido truncado por límite de seguridad]" in document_context else "no",
+        )
+        if used_attachments:
+            self.append_system_message(f"Usando {len(used_attachments)} documento(s) adjunto(s).")
         worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model, document_context), daemon=True)
         worker.start()
 
