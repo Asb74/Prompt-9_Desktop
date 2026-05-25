@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from src.config.settings import normalize_model
+
 
 class SessionStorage:
     def __init__(self, base_dir: Path | None = None) -> None:
@@ -16,14 +18,15 @@ class SessionStorage:
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def create_session(self, model: str, title: str = "Nueva sesión") -> dict:
+    def create_session(self, model: str | None, title: str = "Nueva sesión") -> dict:
         now = self._now_iso()
+        normalized_model = normalize_model(model)
         session = {
             "id": str(uuid4()),
             "title": title,
             "created_at": now,
             "updated_at": now,
-            "model": model,
+            "model": normalized_model,
             "messages": [],
         }
         self.logger.info("Sesión creada: %s", session["id"])
@@ -36,6 +39,11 @@ class SessionStorage:
                 with json_path.open("r", encoding="utf-8") as fh:
                     data = json.load(fh)
                 if isinstance(data, dict) and data.get("id"):
+                    model_before = data.get("model")
+                    normalized_model = normalize_model(model_before)
+                    if model_before != normalized_model:
+                        data["model"] = normalized_model
+                        self.save_session(data)
                     sessions.append(data)
                     self.logger.info("Sesión cargada: %s", data.get("id"))
             except Exception:
@@ -46,6 +54,7 @@ class SessionStorage:
     def save_session(self, session: dict) -> None:
         try:
             session["updated_at"] = self._now_iso()
+            session["model"] = normalize_model(session.get("model"))
             output_path = self.sessions_dir / f"{session['id']}.json"
             with output_path.open("w", encoding="utf-8") as fh:
                 json.dump(session, fh, ensure_ascii=False, indent=2)
