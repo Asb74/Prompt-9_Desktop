@@ -14,6 +14,7 @@ class ChatManager:
         self,
         client: OpenAIClient | None = None,
         conversation_manager: ConversationManager | None = None,
+        streaming_enabled: bool | None = None,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         current = settings.effective_settings()
@@ -22,10 +23,12 @@ class ChatManager:
             system_prompt=str(current["system_prompt"]),
             max_messages=int(current["max_context_messages"]),
         )
+        self.streaming_enabled = bool(current["streaming_enabled"] if streaming_enabled is None else streaming_enabled)
 
-    def update_runtime_settings(self, *, system_prompt: str, max_context_messages: int, api_key: str) -> None:
+    def update_runtime_settings(self, *, system_prompt: str, max_context_messages: int, streaming_enabled: bool, api_key: str) -> None:
         self.conversation_manager.system_prompt = system_prompt
         self.conversation_manager.max_messages = max(4, min(100, int(max_context_messages)))
+        self.streaming_enabled = bool(streaming_enabled)
         self.client = OpenAIClient(api_key=api_key)
 
     def reset_conversation(self) -> None:

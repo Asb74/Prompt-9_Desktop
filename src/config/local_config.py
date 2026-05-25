@@ -18,7 +18,7 @@ def default_config(settings_module: Any) -> dict[str, Any]:
         "default_model": settings_module.DEFAULT_MODEL,
         "system_prompt": settings_module.SYSTEM_PROMPT,
         "max_context_messages": settings_module.MAX_CONTEXT_MESSAGES,
-        "openai_api_key": "",
+        "streaming_enabled": settings_module.STREAMING_ENABLED,
     }
 
 
@@ -26,12 +26,13 @@ def load_local_config(settings_module: Any) -> dict[str, Any]:
     defaults = default_config(settings_module)
     path = _config_path()
     if not path.exists():
+        logger.info("config.local.json no existe; usando configuración por defecto.")
         return defaults
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        logger.exception("No se pudo leer config.local.json; usando defaults.")
+        logger.exception("Configuración corrupta o no legible; usando configuración por defecto.")
         return defaults
 
     if not isinstance(data, dict):
@@ -39,9 +40,10 @@ def load_local_config(settings_module: Any) -> dict[str, Any]:
         return defaults
 
     merged = dict(defaults)
-    for key in ("default_model", "system_prompt", "max_context_messages", "openai_api_key"):
+    for key in ("default_model", "system_prompt", "max_context_messages", "streaming_enabled"):
         if key in data:
             merged[key] = data[key]
+    logger.info("Configuración local cargada desde %s", path)
     return merged
 
 
@@ -50,6 +52,11 @@ def save_local_config(config: dict[str, Any]) -> None:
         "default_model": config.get("default_model", ""),
         "system_prompt": config.get("system_prompt", ""),
         "max_context_messages": config.get("max_context_messages", 20),
-        "openai_api_key": config.get("openai_api_key", ""),
+        "streaming_enabled": bool(config.get("streaming_enabled", True)),
     }
-    _config_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path = _config_path()
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Configuración local guardada en %s", path)
+    except Exception:
+        logger.exception("Error al guardar configuración local")

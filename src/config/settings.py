@@ -15,6 +15,7 @@ MAX_ATTACHMENT_MB = 20
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"}
 
 MAX_CONTEXT_MESSAGES = 20
+STREAMING_ENABLED = True
 SYSTEM_PROMPT = "Eres PROM-9™, un asistente de escritorio integrado en una aplicación Python. Responde de forma clara, útil y estructurada. Si falta información, pide los datos necesarios. No inventes datos."
 
 
@@ -44,10 +45,6 @@ def resolve_api_key(explicit_key: str | None = None) -> str:
     if key:
         return key
 
-    local_key = str(LOCAL_CONFIG.get("openai_api_key", "") or "").strip()
-    if local_key:
-        return local_key
-
     env_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if env_key:
         return env_key
@@ -67,6 +64,8 @@ def effective_settings() -> dict[str, object]:
         max_context_int = MAX_CONTEXT_MESSAGES
     max_context_int = max(4, min(100, max_context_int))
 
+    streaming_enabled = bool(LOCAL_CONFIG.get("streaming_enabled", STREAMING_ENABLED))
+
     api_key = resolve_api_key()
     logging.getLogger(__name__).info("API key configurada: %s", "sí" if bool(api_key) else "no")
 
@@ -74,5 +73,6 @@ def effective_settings() -> dict[str, object]:
         "default_model": default_model,
         "system_prompt": system_prompt,
         "max_context_messages": max_context_int,
+        "streaming_enabled": streaming_enabled,
         "openai_api_key": api_key,
     }
