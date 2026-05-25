@@ -24,7 +24,7 @@ class Database:
             raise
 
     def initialize(self) -> None:
-        schema = [
+        base_schema = [
             """
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -57,10 +57,13 @@ class Database:
                 extracted_chars INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 extracted_path TEXT,
+                extracted_text_path TEXT,
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
                 FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE SET NULL
             )
             """,
+        ]
+        indexes = [
             "CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title)",
             "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_messages_session_content ON messages(session_id, content)",
@@ -70,12 +73,18 @@ class Database:
         ]
         try:
             with self.connect() as conn:
-                for statement in schema:
+                for statement in base_schema:
                     conn.execute(statement)
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
                 if "message_id" not in columns:
                     conn.execute("ALTER TABLE attachments ADD COLUMN message_id TEXT")
                     self.logger.info("Migración SQLite: columna attachments.message_id añadida.")
+                if "extracted_text_path" not in columns:
+                    conn.execute("ALTER TABLE attachments ADD COLUMN extracted_text_path TEXT")
+                    self.logger.info("Migración SQLite: columna attachments.extracted_text_path añadida.")
+                self.logger.info("Migración SQLite: esquema attachments verificado.")
+                for statement in indexes:
+                    conn.execute(statement)
                 conn.commit()
             self.logger.info("Tablas e índices SQLite creados/verificados.")
         except sqlite3.Error:
