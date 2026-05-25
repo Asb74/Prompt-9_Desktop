@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from src.config.settings import normalize_model
+from src.config import settings
 from src.managers.chat_manager import ChatManager
 from src.managers.attachment_manager import AttachmentManager
 from src.database.database import Database
@@ -18,6 +19,10 @@ from src.ui.settings_dialog import SettingsDialog
 
 class MainWindow:
     ROLE_DISPLAY = {"system": "Sistema", "user": "Tú", "assistant": "PROM-9"}
+    DOCUMENT_REFERENCE_TERMS = (
+        "archivo", "documento", "adjunto", "excel", "hoja", "tabla", "datos",
+        "pdf", "word", "csv", "xlsx", "variedad", "kg", "kilos",
+    )
 
     def __init__(self, root: tk.Tk, app_context) -> None:
         self.root = root
@@ -53,6 +58,7 @@ class MainWindow:
         self.partial_message_created_at: str | None = None
         self.partial_message_content: str = ""
         self.cancel_event = threading.Event()
+        self.status_text = tk.StringVar(value="Listo")
 
         self._configure_root()
         self._build_layout()
@@ -309,6 +315,16 @@ class MainWindow:
         self.send_button.grid(row=1, column=1, sticky="ns")
         self.cancel_button = ttk.Button(bottom, text="Cancelar", command=self._on_cancel_generation, state=tk.DISABLED)
         self.cancel_button.grid(row=1, column=2, sticky="ns")
+        self.status_label = ttk.Label(bottom, textvariable=self.status_text)
+        self.status_label.grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+    def _set_status(self, status: str) -> None:
+        self.status_text.set(status)
+        self.logger.info("Estado de generación: %s", status)
+
+    def is_document_reference(self, user_text: str) -> bool:
+        normalized = (user_text or "").lower()
+        return any(term in normalized for term in self.DOCUMENT_REFERENCE_TERMS)
 
     def _load_initial_sessions(self) -> None:
         self.json_migrator.migrate()
@@ -544,11 +560,32 @@ class MainWindow:
         self.cancel_button.configure(state=tk.NORMAL)
         self.cancel_event.clear()
         self.append_partial_message("assistant", "")
+        self._set_status("Preparando adjuntos...")
 
         model = normalize_model(self.model_selector.get())
         self.model_selector.set(model)
         self.sessions_by_id[self.current_session_id]["model"] = model
         used_attachments = [att for att in pending_attachments if (att.get("extracted_text") or att.get("extracted_path"))]
+        use_recent = False
+        if not used_attachments and self.is_document_reference(user_message):
+            use_recent = True
+            self._set_status("Analizando documento...")
+            used_attachments = self.attachment_manager.list_recent_message_attachments(
+                self.current_session_id,
+                limit=int(settings.RECENT_ATTACHMENT_CONTEXT_LIMIT),
+            )
+            self.logger.info(
+                "Uso de adjuntos recientes: session_id=%s detectado_ref=%s total=%s",
+                self.current_session_id,
+                True,
+                len(used_attachments),
+            )
+        else:
+            self.logger.info(
+                "Uso de adjuntos pendientes: session_id=%s total=%s",
+                self.current_session_id,
+                len(used_attachments),
+            )
         document_context = build_document_context(used_attachments)
         context_chars = len(document_context)
         self.logger.info(
@@ -559,8 +596,17 @@ class MainWindow:
             "sí" if "[Contenido truncado por límite de seguridad]" in document_context else "no",
         )
         if used_attachments:
-            self.append_system_message(f"Usando {len(used_attachments)} documento(s) adjunto(s).")
-        self.logger.info("Adjuntos enviados a OpenAI: session_id=%s total=%s", self.current_session_id, len(used_attachments))
+            names = [att.get("original_name", "archivo") for att in used_attachments]
+            label = f"Usando {len(used_attachments)} documento adjunto: {names[0]}" if len(used_attachments) == 1 else f"Usando {len(used_attachments)} documentos adjuntos: {', '.join(names[:3])}"
+            self.append_system_message(label)
+            self.logger.info(
+                "Adjuntos enviados a OpenAI: session_id=%s origen=%s archivos=%s chars=%s",
+                self.current_session_id,
+                "recientes" if use_recent else "pendientes",
+                names,
+                context_chars,
+            )
+        self._set_status("Consultando OpenAI...")
         worker = threading.Thread(target=self._assistant_response_worker, args=(user_message, model, document_context), daemon=True)
         worker.start()
 
@@ -570,6 +616,7 @@ class MainWindow:
                 self.root.after(0, lambda d=delta: self.update_partial_message(d))
 
             if self.chat_manager.streaming_enabled:
+                self.root.after(0, lambda: self._set_status("Generando respuesta..."))
                 response = self.chat_manager.send_message_streaming(
                     user_text=user_message,
                     model=model,
@@ -597,6 +644,7 @@ class MainWindow:
         self.send_button.configure(state=tk.NORMAL)
         self.cancel_button.configure(state=tk.DISABLED)
         self.cancel_event.clear()
+        self._set_status("Listo")
 
     def _on_worker_error(self) -> None:
         error_msg = "No se pudo obtener respuesta de OpenAI. Revisa la configuración, el modelo o la conexión."
@@ -605,9 +653,11 @@ class MainWindow:
         self.send_button.configure(state=tk.NORMAL)
         self.cancel_button.configure(state=tk.DISABLED)
         self.cancel_event.clear()
+        self._set_status("Error")
 
     def _on_cancel_generation(self) -> None:
         self.logger.info("Cancelación solicitada por el usuario.")
+        self._set_status("Cancelando...")
         self.cancel_event.set()
         self.cancel_button.configure(state=tk.DISABLED)
 

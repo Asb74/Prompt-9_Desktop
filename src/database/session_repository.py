@@ -324,6 +324,25 @@ class SessionRepository:
             self.logger.exception("Error SQLite listando adjuntos por mensaje: message_id=%s", message_id)
             return []
 
+    def list_recent_message_attachments(self, session_id: str, limit: int = 3) -> list[dict]:
+        safe_limit = max(1, min(20, int(limit)))
+        try:
+            with self.database.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, session_id, message_id, original_name, stored_path, extracted_path, extension, extracted_chars, created_at
+                    FROM attachments
+                    WHERE session_id = ? AND message_id IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (session_id, safe_limit),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            self.logger.exception("Error SQLite listando adjuntos recientes: session_id=%s limit=%s", session_id, safe_limit)
+            return []
+
     def delete_attachment(self, attachment_id: str) -> None:
         try:
             with self.database.connect() as conn:

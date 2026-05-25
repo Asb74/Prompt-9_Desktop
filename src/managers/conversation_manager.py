@@ -44,7 +44,15 @@ class ConversationManager:
         non_system_messages = self.messages[1:]
         bounded_non_system = non_system_messages[-self.max_messages :]
         if document_context and document_context.strip():
-            bounded_non_system = [{"role": "system", "content": document_context.strip()}, *bounded_non_system]
+            temporary_instruction = (
+                "Usa el contexto documental adjunto para responder. Si el dato solicitado no aparece en el documento, "
+                "indícalo claramente. No digas que vas a revisar el archivo: analízalo directamente con el contenido disponible."
+            )
+            bounded_non_system = [
+                {"role": "system", "content": temporary_instruction},
+                {"role": "system", "content": document_context.strip()},
+                *bounded_non_system,
+            ]
         return [system_message, *bounded_non_system]
 
     def get_all_messages(self) -> list[dict[str, Any]]:
