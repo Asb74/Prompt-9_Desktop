@@ -105,6 +105,8 @@ class MainWindow:
         session_count = self.session_listbox.size() + 1
         self.session_listbox.insert(tk.END, f"Sesión {session_count}")
         self.logger.info("Nueva sesión iniciada: Sesión %s", session_count)
+        self.chat_manager.reset_conversation()
+        self._clear_conversation_view()
         self.append_system_message("Nueva sesión creada.")
 
     def _on_ctrl_enter(self, event: tk.Event) -> str:
@@ -142,8 +144,13 @@ class MainWindow:
         self.send_button.configure(state=tk.NORMAL)
 
     def _on_worker_error(self) -> None:
-        self.append_system_message("Ocurrió un error al generar la respuesta simulada.")
+        self.append_system_message("No se pudo obtener respuesta de OpenAI. Revisa la configuración, el modelo o la conexión.")
         self.send_button.configure(state=tk.NORMAL)
+
+    def _clear_conversation_view(self) -> None:
+        self.conversation_text.configure(state=tk.NORMAL)
+        self.conversation_text.delete("1.0", tk.END)
+        self.conversation_text.configure(state=tk.DISABLED)
 
     def append_message(self, role: str, content: str) -> None:
         self.conversation_text.configure(state=tk.NORMAL)
