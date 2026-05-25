@@ -39,10 +39,12 @@ class ConversationManager:
         self.messages = [self.messages[0], *self.messages[1:][-self.max_messages :]]
         self.logger.info("Conversación reconstruida con %s mensajes.", len(self.messages) - 1)
 
-    def get_messages_for_openai(self) -> list[dict[str, Any]]:
+    def get_messages_for_openai(self, document_context: str | None = None) -> list[dict[str, Any]]:
         system_message = self.messages[0]
         non_system_messages = self.messages[1:]
         bounded_non_system = non_system_messages[-self.max_messages :]
+        if document_context and document_context.strip():
+            bounded_non_system = [{"role": "system", "content": document_context.strip()}, *bounded_non_system]
         return [system_message, *bounded_non_system]
 
     def get_all_messages(self) -> list[dict[str, Any]]:

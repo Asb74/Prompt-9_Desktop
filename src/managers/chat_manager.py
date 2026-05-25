@@ -34,7 +34,7 @@ class ChatManager:
     def reset_conversation(self) -> None:
         self.conversation_manager.reset()
 
-    def send_message(self, user_text: str, model: str | None) -> str:
+    def send_message(self, user_text: str, model: str | None, document_context: str | None = None) -> str:
         self.conversation_manager.add_user_message(user_text)
         model_name = settings.normalize_model(model)
         self.logger.info("Modelo normalizado para envío: %s", model_name)
@@ -46,7 +46,7 @@ class ChatManager:
             return assistant_text
 
         try:
-            messages = self.conversation_manager.get_messages_for_openai()
+            messages = self.conversation_manager.get_messages_for_openai(document_context=document_context)
             self.logger.info("Enviando %s mensajes a OpenAI con modelo %s", len(messages), model_name)
             assistant_text = self.client.generate_text(messages=messages, model=model_name)
             if not assistant_text:
@@ -65,6 +65,7 @@ class ChatManager:
         model: str | None,
         on_delta: Callable[[str], None],
         should_cancel: Callable[[], bool] | None,
+        document_context: str | None = None,
     ) -> str:
         self.conversation_manager.add_user_message(user_text)
         model_name = settings.normalize_model(model)
@@ -78,7 +79,7 @@ class ChatManager:
             return assistant_text
 
         try:
-            messages = self.conversation_manager.get_messages_for_openai()
+            messages = self.conversation_manager.get_messages_for_openai(document_context=document_context)
             self.logger.info("Streaming a OpenAI: modelo=%s mensajes=%s", model_name, len(messages))
             assistant_text = self.client.stream_text(
                 messages=messages,

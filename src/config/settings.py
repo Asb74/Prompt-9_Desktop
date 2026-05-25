@@ -12,7 +12,8 @@ APP_VERSION = "0.1.0"
 DEFAULT_MODEL = "gpt-4.1-mini"
 AVAILABLE_MODELS = ["gpt-4.1-mini", "gpt-4o-mini"]
 MAX_ATTACHMENT_MB = 20
-ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"}
+MAX_DOCUMENT_CHARS = 20000
+ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".xlsx", ".csv"}
 
 MAX_CONTEXT_MESSAGES = 20
 STREAMING_ENABLED = True
