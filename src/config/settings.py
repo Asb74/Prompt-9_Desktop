@@ -10,3 +10,6 @@ DEFAULT_MODEL = "gpt-4.1-mini"
 MAX_ATTACHMENT_MB = 20
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"}
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+MAX_CONTEXT_MESSAGES = 20
+SYSTEM_PROMPT = "Eres PROM-9™, un asistente de escritorio integrado en una aplicación Python. Responde de forma clara, útil y estructurada. Si falta información, pide los datos necesarios. No inventes datos."
