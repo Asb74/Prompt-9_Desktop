@@ -16,7 +16,6 @@ from src.services.text_chunker import build_document_context
 from src.services.conversation_exporter import ConversationExporter
 from src.ui.settings_dialog import SettingsDialog
 from src.services.table_loader import TableLoader
-from src.services.table_schema_detector import detect_semantic_columns
 from src.services.query_intent_detector import QueryIntentDetector
 from src.services.table_analysis_engine import TableAnalysisEngine
 
@@ -642,33 +641,23 @@ class MainWindow:
             if not tables:
                 return ""
 
-            self.logger.info("Table analysis: hojas_detectadas=%s", len(tables))
-            headers = []
-            rows_processed = 0
-            for table in tables:
-                headers.extend(table.get("headers", []))
-                rows_processed += len(table.get("rows", []))
-
-            self._set_status("Detectando columnas...")
-            semantic_columns = detect_semantic_columns(headers)
-            self.logger.info("Table analysis: filas_procesadas=%s columnas_detectadas=%s", rows_processed, semantic_columns)
-            self.logger.info("Table analysis: intencion_detectada=%s", intent)
-
+            self.logger.info("Table analysis: hojas_detectadas=%s intencion=%s", len(tables), intent)
             self._set_status("Calculando resultados...")
-            result = self.table_analysis_engine.run(tables, semantic_columns, intent)
-            if not result:
-                return ""
+            result = self.table_analysis_engine.run_analysis(tables, intent)
+            if intent.get("top_n"):
+                result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
 
             self.logger.info("Table analysis: operacion_ejecutada=%s", intent.get("operation"))
             self._set_status("Generando respuesta...")
-            lines = ["Resultado calculado localmente (determinista):"]
-            if isinstance(result, dict):
-                for key, value in result.items():
-                    lines.append(f"- {key}: {value}")
-            else:
-                lines.append(str(result))
-            lines.append("Instrucción al modelo: Usa estos resultados ya calculados. No recalcules ni digas que no puedes analizar el archivo.")
+            lines = [
+                "Resultado tabular calculado localmente (determinista):",
+                str(result),
+                "Instrucción al modelo: Usa exclusivamente estos resultados calculados localmente para responder. No recalcules ni inventes valores. Si falta alguna columna, indícalo claramente.",
+            ]
             return "\n".join(lines)
+        except ValueError as exc:
+            self.logger.warning("Error de columnas en análisis tabular: %s", exc)
+            return f"Resultado tabular calculado localmente (determinista):\nERROR: {exc}"
         except Exception:
             self.logger.exception("Error en motor genérico de análisis tabular")
             return ""
