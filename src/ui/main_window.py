@@ -595,9 +595,14 @@ class MainWindow:
                 len(used_attachments),
             )
         local_spreadsheet_context = self._build_local_spreadsheet_context(user_message, used_attachments)
-        document_context = build_document_context(used_attachments)
-        if local_spreadsheet_context:
-            document_context = f"{document_context}\n\n{local_spreadsheet_context}" if document_context else local_spreadsheet_context
+        intent = self.query_intent_detector.detect(user_message)
+        if intent and intent.get("type") == "table_analysis":
+            document_context = local_spreadsheet_context
+            self.logger.info("Consulta tabular detectada: se omite contexto textual de adjuntos y se usa solo cálculo local.")
+        else:
+            document_context = build_document_context(used_attachments)
+            if local_spreadsheet_context:
+                document_context = f"{document_context}\n\n{local_spreadsheet_context}" if document_context else local_spreadsheet_context
         context_chars = len(document_context)
         self.logger.info(
             "Contexto documental preparado para envío actual: session_id=%s adjuntos=%s chars=%s truncado=%s",
@@ -644,6 +649,9 @@ class MainWindow:
                 return ""
 
             semantic_schema = self.semantic_inference.infer_schema(tables)
+            total_rows = sum(len(t.get("rows", [])) for t in tables)
+            sheet_names = [t.get("sheet_name", "") for t in tables]
+            self.logger.info("TableLoader resumen: hojas_leidas=%s nombres=%s total_filas_estructuradas=%s", len(tables), sheet_names, total_rows)
             self.logger.info("Table analysis: hojas_detectadas=%s intencion=%s semantic=%s", len(tables), intent, semantic_schema)
 
             semantic_hints = self._build_semantic_hints(intent, semantic_schema)
@@ -652,6 +660,11 @@ class MainWindow:
 
             self._set_status("Calculando resultados...")
             result = self.table_analysis_engine.run_analysis(tables, intent, semantic_schema=semantic_schema)
+            unique_groups = [r.get("group") for r in result.get("result", []) if r.get("group") not in {None, ""}]
+            self.logger.info("Table analysis columnas: group_by=%s value=%s filas_procesadas=%s total=%s", result.get("group_by"), result.get("value_column") or result.get("numerator_column"), result.get("rows_processed"), result.get("total"))
+            self.logger.info("Table analysis variedades_encontradas=%s detalle=%s", len(unique_groups), unique_groups)
+            if len(unique_groups) == 1:
+                self.logger.warning("Solo se detectó una variedad. Verificar cabecera/rango/hojas.")
             if intent.get("top_n"):
                 result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
 
@@ -660,7 +673,7 @@ class MainWindow:
             lines = [
                 "Resultado tabular calculado localmente (determinista):",
                 str(result),
-                "Instrucción al modelo: Usa exclusivamente estos resultados calculados localmente para responder. No recalcules ni inventes valores. Si falta alguna columna, indícalo claramente.",
+                "Estos resultados han sido calculados localmente por Python sobre el Excel completo. Úsalos literalmente. No recalcules, no inventes valores y no digas que no puedes leer el archivo.",
             ]
             return "\n".join(lines)
         except ValueError as exc:
