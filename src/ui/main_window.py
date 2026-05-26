@@ -27,6 +27,11 @@ class MainWindow:
         "archivo", "documento", "adjunto", "excel", "hoja", "tabla", "datos",
         "pdf", "word", "csv", "xlsx", "variedad", "kg", "kilos",
     )
+    TABULAR_RISK_TERMS = (
+        "socio", "entrega", "entregas", "kilos", "kg", "neto", "importe",
+        "precio", "variedad", "cultivo", "producto", "total", "resumen",
+        "top", "mayor", "mas", "más",
+    )
 
     def __init__(self, root: tk.Tk, app_context) -> None:
         self.root = root
@@ -595,11 +600,18 @@ class MainWindow:
                 self.current_session_id,
                 len(used_attachments),
             )
-        local_spreadsheet_context = self._build_local_spreadsheet_context(user_message, used_attachments)
         intent = self.query_intent_detector.detect(user_message)
+        tabular_risk = self._has_tabular_risk(user_message) and self._has_recent_tabular_attachment(used_attachments)
+        local_spreadsheet_context = self._build_local_spreadsheet_context(user_message, used_attachments)
+        if tabular_risk and not intent:
+            self.logger.warning("Bloqueo anti-alucinación: riesgo_tabular=true intent_detectado=false mensaje=%s", user_message)
+            clarification = "La pregunta parece tabular, pero no sé si quieres contar entregas, sumar kilos o sumar importe."
+            self.update_partial_message(clarification)
+            self._on_worker_success(clarification)
+            return
         if intent and intent.get("type") == "table_analysis":
             document_context = local_spreadsheet_context
-            self.logger.info("Consulta tabular detectada: se omite contexto textual de adjuntos y se usa solo cálculo local.")
+            self.logger.info("Consulta tabular detectada: se omite contexto textual de adjuntos y se usa solo cálculo local. intent=%s", intent)
         else:
             document_context = build_document_context(used_attachments)
             if local_spreadsheet_context:
@@ -661,22 +673,21 @@ class MainWindow:
             result = self.table_analysis_engine.run_analysis(tables, intent, semantic_schema=semantic_schema)
             self.pending_table_intent = None
             unique_groups = [r.get("group") for r in result.get("result", []) if r.get("group") not in {None, ""}]
-            self.logger.info("Table analysis columnas: group_by=%s value=%s filas_procesadas=%s total=%s", result.get("group_by"), result.get("value_column") or result.get("numerator_column"), result.get("rows_processed"), result.get("total"))
+            self.logger.info("Table analysis intent_detectado=%s", intent)
+            self.logger.info("Table analysis operacion_ejecutada=%s columnas_usadas=%s top_n_aplicado=%s", result.get("operation"), {"group_by": result.get("group_by"), "value_column": result.get("value_column") or result.get("numerator_column")}, result.get("top_n"))
+            self.logger.info("Table analysis resultado_local_bruto=%s", result)
             self.logger.info("Table analysis variedades_encontradas=%s detalle=%s", len(unique_groups), unique_groups)
             if intent.get("operation") == "aggregate_sum" and (str(result.get("group_by", "")).lower().startswith("variedad") or str(intent.get("group_by_semantic", "")) == "variety") and len(unique_groups) == 1:
                 possible_more_blocks = any(int(sheet.get("blocks_detected", 0)) > 1 for sheet in debug_info.get("sheets", [])) or len(debug_info.get("sheets_found", [])) > 1
                 if possible_more_blocks:
                     self.logger.warning("Solo se detectó una variedad con múltiples bloques/hojas. log=%s", debug_info.get("log_path", ""))
                     return "Resultado tabular calculado localmente (determinista):\nERROR: El lector tabular solo ha detectado una variedad. Revisa logs/table_debug_*.json."
-            if intent.get("top_n"):
-                result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
-
             self.logger.info("Table analysis: operacion_ejecutada=%s", intent.get("operation"))
             self._set_status("Generando respuesta...")
             lines = [
                 "Resultado tabular calculado localmente (determinista):",
                 str(result),
-                "Estos resultados han sido calculados localmente por Python sobre el Excel completo. Úsalos literalmente. No recalcules, no inventes valores y no digas que no puedes leer el archivo.",
+                "Estos resultados han sido calculados localmente por Python sobre el Excel completo. Úsalos literalmente. No recalcules, no inventes valores y no digas que no puedes leer el archivo. Estos resultados han sido calculados localmente. No añadas socios, variedades ni valores que no aparezcan en el resultado.",
             ]
             return "\n".join(lines)
         except ValueError as exc:
@@ -768,6 +779,13 @@ class MainWindow:
 
     def _normalize_for_match(self, text: str) -> str:
         return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    def _has_tabular_risk(self, user_message: str) -> bool:
+        normalized = self._normalize_for_match(user_message)
+        return any(term in normalized for term in self.TABULAR_RISK_TERMS)
+
+    def _has_recent_tabular_attachment(self, attachments: list[dict]) -> bool:
+        return any(a.get("extension", "").lower() in {".xlsx", ".xls", ".csv"} for a in attachments)
 
     def _assistant_response_worker(self, user_message: str, model: str, document_context: str) -> None:
         try:

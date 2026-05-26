@@ -21,6 +21,26 @@ class QueryIntentDetector:
                 "top_n": top,
             }
 
+        if self._is_top_partner_by_deliveries(normalized):
+            return {
+                "type": "table_analysis",
+                "operation": "count_by",
+                "group_by": "Socio",
+                "group_by_semantic": "partner",
+                "top_n": self._detect_top_n(normalized, default=1),
+            }
+
+        if self._is_top_partner_by_weight(normalized):
+            return {
+                "type": "table_analysis",
+                "operation": "aggregate_sum",
+                "group_by": "Socio",
+                "value_column": "Neto",
+                "group_by_semantic": "partner",
+                "value_semantic": "weight_kg",
+                "top_n": self._detect_top_n(normalized, default=1),
+            }
+
         if "precio medio por kg" in normalized:
             group_by = "Variedad" if "variedad" in normalized else "Socio" if "socio" in normalized else "Variedad"
             return {
@@ -69,9 +89,25 @@ class QueryIntentDetector:
 
         return None
 
-    def _detect_top_n(self, text: str) -> int:
+    def _detect_top_n(self, text: str, default: int = 10) -> int:
         match = re.search(r"top\s+(\d+)", text)
-        return int(match.group(1)) if match else 10
+        return int(match.group(1)) if match else default
+
+    def _is_top_partner_by_deliveries(self, normalized: str) -> bool:
+        checks = [
+            "socio con mas entregas",
+            "quien ha entregado mas",
+            "top socios por entregas",
+        ]
+        return any(x in normalized for x in checks)
+
+    def _is_top_partner_by_weight(self, normalized: str) -> bool:
+        checks = [
+            "socio con mas kilos",
+            "socio que mas kg ha entregado",
+            "top socios por kg",
+        ]
+        return any(x in normalized for x in checks)
 
     def _normalize(self, text: str) -> str:
         raw = unicodedata.normalize("NFD", (text or "").lower())
