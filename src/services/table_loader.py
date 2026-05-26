@@ -13,6 +13,8 @@ except Exception:  # pragma: no cover
 
 
 class TableLoader:
+    HEADER_KEYWORDS = {"socio", "nombre", "variedad", "neto", "importe", "precio"}
+
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
@@ -168,48 +170,161 @@ class TableLoader:
         return tables
 
     def _build_table(self, sheet_name: str, rows: list[list[Any]]) -> dict[str, Any] | None:
-        non_empty_rows = [row for row in rows if self._row_has_content(row)]
-        if not non_empty_rows:
+        if not rows:
             self.logger.info("TableLoader: hoja_vacia=%s", sheet_name)
             return None
 
-        header_idx = self.detect_header_row(non_empty_rows)
-        raw_headers = non_empty_rows[header_idx] if header_idx < len(non_empty_rows) else []
+        blocks = self._detect_blocks(rows)
+        if not blocks:
+            self.logger.info("TableLoader: hoja_sin_bloques=%s", sheet_name)
+            return None
 
-        used_headers: dict[str, int] = {}
-        headers = [self.clean_header(value, idx, used_headers) for idx, value in enumerate(raw_headers)]
-        if not headers:
-            headers = ["Columna_1"]
-
-        data_rows: list[dict[str, Any]] = []
-        for row in non_empty_rows[header_idx + 1 :]:
-            normalized_row = list(row)
-            if len(normalized_row) < len(headers):
-                normalized_row.extend([None] * (len(headers) - len(normalized_row)))
-
-            record = {
-                header: self.normalize_cell_value(normalized_row[idx])
-                for idx, header in enumerate(headers)
-            }
-            if self._record_has_content(record):
-                data_rows.append(record)
+        main_block = blocks[0]
+        merged_rows = list(main_block["rows"])
+        for block in blocks[1:]:
+            if self._headers_compatible(main_block["headers"], block["headers"]):
+                merged_rows.extend(self._remap_rows(block["rows"], block["headers"], main_block["headers"]))
 
         table = {
             "sheet_name": sheet_name,
-            "headers": headers,
-            "rows": data_rows,
-            "row_count": len(data_rows),
-            "column_count": len(headers),
+            "headers": main_block["headers"],
+            "rows": merged_rows,
+            "row_count": len(merged_rows),
+            "column_count": len(main_block["headers"]),
         }
+
+        total_neto = self._sum_numeric_column(merged_rows, main_block["headers"], "neto")
         self.logger.info(
-            "TableLoader: hoja=%s cabecera_detectada_idx=%s cabecera=%s filas=%s columnas=%s",
+            "TableLoader diagnóstico: hoja=%s cabeceras_detectadas=%s filas_cabecera=%s bloques_detectados=%s filas_utiles_por_bloque=%s variedades_por_bloque=%s total_filas_procesadas=%s total_neto_calculado=%s",
             sheet_name,
-            header_idx,
-            headers,
-            table["row_count"],
-            table["column_count"],
+            [b["headers"] for b in blocks],
+            [b["header_row_index"] for b in blocks],
+            len(blocks),
+            [len(b["rows"]) for b in blocks],
+            [sorted(list(b["varieties"])) for b in blocks],
+            len(merged_rows),
+            total_neto,
         )
         return table
+
+    def _detect_blocks(self, rows: list[list[Any]]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+
+        for row_idx, row in enumerate(rows):
+            if not self._row_has_content(row):
+                continue
+
+            if self._is_header_candidate(row):
+                if current and current["rows"]:
+                    blocks.append(current)
+                headers = self._build_headers_from_row(row)
+                current = {
+                    "headers": headers,
+                    "header_row_index": row_idx,
+                    "rows": [],
+                    "varieties": set(),
+                }
+                continue
+
+            if current is None:
+                continue
+
+            normalized_row = list(row)
+            if len(normalized_row) < len(current["headers"]):
+                normalized_row.extend([None] * (len(current["headers"]) - len(normalized_row)))
+
+            record = {
+                header: self.normalize_cell_value(normalized_row[idx])
+                for idx, header in enumerate(current["headers"])
+            }
+            if self._record_has_content(record):
+                current["rows"].append(record)
+                variety = self._extract_variety(record)
+                if variety:
+                    current["varieties"].add(variety)
+
+        if current and current["rows"]:
+            blocks.append(current)
+
+        if not blocks:
+            non_empty_rows = [row for row in rows if self._row_has_content(row)]
+            if not non_empty_rows:
+                return []
+            header_idx = self.detect_header_row(non_empty_rows)
+            headers = self._build_headers_from_row(non_empty_rows[header_idx])
+            fallback_rows: list[dict[str, Any]] = []
+            for row in non_empty_rows[header_idx + 1 :]:
+                normalized_row = list(row)
+                if len(normalized_row) < len(headers):
+                    normalized_row.extend([None] * (len(headers) - len(normalized_row)))
+                record = {header: self.normalize_cell_value(normalized_row[idx]) for idx, header in enumerate(headers)}
+                if self._record_has_content(record):
+                    fallback_rows.append(record)
+            blocks.append({"headers": headers, "header_row_index": header_idx, "rows": fallback_rows, "varieties": set()})
+        return blocks
+
+    def _is_header_candidate(self, row: list[Any]) -> bool:
+        texts = [self._normalize_header_token(self._cell_to_text(value)) for value in row]
+        non_empty = [t for t in texts if t]
+        if len(non_empty) < 2:
+            return False
+        keyword_hits = sum(1 for t in non_empty if t in self.HEADER_KEYWORDS)
+        if keyword_hits >= 2:
+            return True
+        unique_text = set(non_empty)
+        return len(unique_text.intersection(self.HEADER_KEYWORDS)) >= 2
+
+    def _build_headers_from_row(self, row: list[Any]) -> list[str]:
+        used_headers: dict[str, int] = {}
+        headers = [self.clean_header(value, idx, used_headers) for idx, value in enumerate(row)]
+        return headers if headers else ["Columna_1"]
+
+    def _headers_compatible(self, base_headers: list[str], other_headers: list[str]) -> bool:
+        base_norm = {self._normalize_header_token(header): header for header in base_headers}
+        other_norm = {self._normalize_header_token(header): header for header in other_headers}
+        shared = set(base_norm).intersection(other_norm)
+        if len(shared) >= 2:
+            return True
+        expected = {"socio", "nombre", "variedad", "neto", "importe", "precio"}
+        return len(shared.intersection(expected)) >= 2
+
+    def _remap_rows(self, rows: list[dict[str, Any]], source_headers: list[str], target_headers: list[str]) -> list[dict[str, Any]]:
+        source_map = {self._normalize_header_token(header): header for header in source_headers}
+        remapped: list[dict[str, Any]] = []
+        for row in rows:
+            mapped_row: dict[str, Any] = {}
+            for target in target_headers:
+                source_key = source_map.get(self._normalize_header_token(target))
+                mapped_row[target] = row.get(source_key) if source_key else None
+            if self._record_has_content(mapped_row):
+                remapped.append(mapped_row)
+        return remapped
+
+    def _extract_variety(self, record: dict[str, Any]) -> str:
+        for key, value in record.items():
+            normalized = self._normalize_header_token(key)
+            if normalized == "variedad":
+                return str(value or "").strip().upper()
+        return ""
+
+    def _sum_numeric_column(self, rows: list[dict[str, Any]], headers: list[str], semantic_header: str) -> float:
+        target = None
+        for header in headers:
+            if self._normalize_header_token(header) == semantic_header:
+                target = header
+                break
+        if not target:
+            return 0.0
+        total = 0.0
+        for row in rows:
+            value = row.get(target)
+            if isinstance(value, (int, float)):
+                total += float(value)
+        return total
+
+    def _normalize_header_token(self, value: str) -> str:
+        return "".join(ch.lower() for ch in value.strip() if ch.isalnum())
 
     def _read_csv(self, path: str, encoding: str, forced_delimiter: str | None) -> list[list[str]]:
         with open(path, "r", encoding=encoding, newline="") as file:
