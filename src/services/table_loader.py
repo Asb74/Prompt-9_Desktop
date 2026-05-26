@@ -202,8 +202,10 @@ class TableLoader:
             "column_count": len(headers),
         }
         self.logger.info(
-            "TableLoader: hoja=%s filas=%s columnas=%s",
+            "TableLoader: hoja=%s cabecera_detectada_idx=%s cabecera=%s filas=%s columnas=%s",
             sheet_name,
+            header_idx,
+            headers,
             table["row_count"],
             table["column_count"],
         )
