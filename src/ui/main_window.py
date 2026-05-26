@@ -18,6 +18,7 @@ from src.ui.settings_dialog import SettingsDialog
 from src.services.table_loader import TableLoader
 from src.services.query_intent_detector import QueryIntentDetector
 from src.services.table_analysis_engine import TableAnalysisEngine
+from src.services.semantic_column_inference import SemanticColumnInference
 
 
 class MainWindow:
@@ -50,6 +51,7 @@ class MainWindow:
         self.table_loader = TableLoader()
         self.query_intent_detector = QueryIntentDetector()
         self.table_analysis_engine = TableAnalysisEngine()
+        self.semantic_inference = SemanticColumnInference()
 
         self.sessions_by_id: dict[str, dict] = {}
         self.session_order: list[str] = []
@@ -641,9 +643,15 @@ class MainWindow:
             if not tables:
                 return ""
 
-            self.logger.info("Table analysis: hojas_detectadas=%s intencion=%s", len(tables), intent)
+            semantic_schema = self.semantic_inference.infer_schema(tables)
+            self.logger.info("Table analysis: hojas_detectadas=%s intencion=%s semantic=%s", len(tables), intent, semantic_schema)
+
+            semantic_hints = self._build_semantic_hints(intent, semantic_schema)
+            if semantic_hints:
+                return semantic_hints
+
             self._set_status("Calculando resultados...")
-            result = self.table_analysis_engine.run_analysis(tables, intent)
+            result = self.table_analysis_engine.run_analysis(tables, intent, semantic_schema=semantic_schema)
             if intent.get("top_n"):
                 result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
 
@@ -661,6 +669,30 @@ class MainWindow:
         except Exception:
             self.logger.exception("Error en motor genérico de análisis tabular")
             return ""
+
+
+    def _build_semantic_hints(self, intent: dict, semantic_schema: dict) -> str:
+        requested = [
+            ("group_by_semantic", "agrupación"),
+            ("value_semantic", "valor"),
+            ("numerator_semantic", "numerador"),
+            ("denominator_semantic", "denominador"),
+        ]
+        for key, label in requested:
+            semantic = intent.get(key)
+            if not semantic:
+                continue
+            candidates = []
+            for table in semantic_schema.get("tables", []):
+                for col, meta in table.get("columns", {}).items():
+                    if meta.get("semantic_type") == semantic:
+                        candidates.append((col, float(meta.get("confidence", 0.0))))
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            if not candidates or candidates[0][1] < 0.60 or (len(candidates) > 1 and abs(candidates[0][1]-candidates[1][1]) < 0.05):
+                top = ", ".join([f"{c[0]} ({c[1]:.2f})" for c in candidates[:3]]) or "sin candidatos"
+                self.logger.warning("Baja confianza semántica semantic=%s candidates=%s", semantic, candidates[:3])
+                return f"Resultado tabular calculado localmente (determinista):\nERROR: No estoy seguro de qué columna representa '{semantic}' para {label}. Columnas candidatas: {top}."
+        return ""
 
     def _assistant_response_worker(self, user_message: str, model: str, document_context: str) -> None:
         try:
