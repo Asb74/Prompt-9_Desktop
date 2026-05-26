@@ -44,6 +44,15 @@ class QueryIntentDetector:
 
 
         if any(x in normalized for x in ["kg por producto", "kilos por producto", "neto por producto", "kg por cultivo", "kilos por cultivo", "neto por cultivo", "kg por variedad", "kilos por variedad", "kg entregados por variedad", "neto por variedad"]):
+            if any(x in normalized for x in ["kg por producto", "kilos por producto", "neto por producto"]):
+                return {
+                    "type": "table_analysis",
+                    "operation": "aggregate_sum",
+                    "group_by": "Producto",
+                    "value_column": "Neto",
+                    "group_by_semantic": "product",
+                    "value_semantic": "weight_kg",
+                }
             return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Variedad", "value_column": "Neto", "group_by_semantic": "variety", "value_semantic": "weight_kg"}
 
         if "neto por socio" in normalized:
