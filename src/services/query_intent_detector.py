@@ -16,6 +16,8 @@ class QueryIntentDetector:
                 "operation": "aggregate_sum",
                 "group_by": "Socio",
                 "value_column": "Neto",
+                "group_by_semantic": "partner",
+                "value_semantic": "weight_kg",
                 "top_n": top,
             }
 
@@ -27,6 +29,9 @@ class QueryIntentDetector:
                 "group_by": group_by,
                 "numerator_column": "Importe",
                 "denominator_column": "Neto",
+                "group_by_semantic": "variety" if group_by == "Variedad" else "partner",
+                "numerator_semantic": "money_total",
+                "denominator_semantic": "weight_kg",
             }
 
         if "precio medio por variedad" in normalized:
@@ -38,19 +43,19 @@ class QueryIntentDetector:
             }
 
         if any(x in normalized for x in ["kg por variedad", "kilos por variedad", "kg entregados por variedad", "neto por variedad"]):
-            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Variedad", "value_column": "Neto"}
+            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Variedad", "value_column": "Neto", "group_by_semantic": "variety", "value_semantic": "weight_kg"}
 
         if "neto por socio" in normalized:
-            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Socio", "value_column": "Neto"}
+            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Socio", "value_column": "Neto", "group_by_semantic": "partner", "value_semantic": "weight_kg"}
 
         if "importe por socio" in normalized:
-            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Socio", "value_column": "Importe"}
+            return {"type": "table_analysis", "operation": "aggregate_sum", "group_by": "Socio", "value_column": "Importe", "group_by_semantic": "partner", "value_semantic": "money_total"}
 
         if "total neto" in normalized:
-            return {"type": "table_analysis", "operation": "total_sum", "value_column": "Neto"}
+            return {"type": "table_analysis", "operation": "total_sum", "value_column": "Neto", "value_semantic": "weight_kg"}
 
         if "total importe" in normalized:
-            return {"type": "table_analysis", "operation": "total_sum", "value_column": "Importe"}
+            return {"type": "table_analysis", "operation": "total_sum", "value_column": "Importe", "value_semantic": "money_total"}
 
         return None
 

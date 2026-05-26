@@ -8,30 +8,32 @@ class TableAnalysisEngine:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-    def run_analysis(self, tables: list[dict[str, Any]], intent: dict[str, Any]) -> dict[str, Any]:
+    def run_analysis(self, tables: list[dict[str, Any]], intent: dict[str, Any], semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
         operation = intent.get("operation")
         if operation == "aggregate_sum":
-            return self.aggregate_sum(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")))
+            return self.aggregate_sum(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
         if operation == "total_sum":
-            return self.total_sum(tables, str(intent.get("value_column", "")))
+            return self.total_sum(tables, str(intent.get("value_column", "")), intent, semantic_schema)
         if operation == "count_by":
-            return self.count_by(tables, str(intent.get("group_by", "")))
+            return self.count_by(tables, str(intent.get("group_by", "")), intent, semantic_schema)
         if operation == "average":
-            return self.average(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")))
+            return self.average(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
         if operation == "weighted_average":
             result = self.weighted_average(
                 tables,
                 str(intent.get("group_by", "")),
                 str(intent.get("numerator_column", "")),
                 str(intent.get("denominator_column", "")),
+                intent,
+                semantic_schema,
             )
             if intent.get("top_n"):
                 return self.top_n(result, int(intent.get("top_n", 10)))
             return result
         raise ValueError(f"Operación no soportada: {operation}")
 
-    def aggregate_sum(self, tables: list[dict[str, Any]], group_by: str, value_column: str) -> dict[str, Any]:
-        gcol, vcol, headers = self._resolve_columns(tables, group_by, value_column)
+    def aggregate_sum(self, tables: list[dict[str, Any]], group_by: str, value_column: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        gcol, vcol, headers = self._resolve_columns(tables, group_by, value_column, intent, semantic_schema)
         grouped: dict[str, float] = defaultdict(float)
         rows_processed = 0
         ignored_rows = 0
@@ -62,8 +64,8 @@ class TableAnalysisEngine:
         self._log_operation(payload, headers)
         return payload
 
-    def total_sum(self, tables: list[dict[str, Any]], value_column: str) -> dict[str, Any]:
-        _, vcol, headers = self._resolve_columns(tables, None, value_column)
+    def total_sum(self, tables: list[dict[str, Any]], value_column: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        _, vcol, headers = self._resolve_columns(tables, None, value_column, intent, semantic_schema)
         total = 0.0
         rows_processed = 0
         ignored_rows = 0
@@ -85,8 +87,8 @@ class TableAnalysisEngine:
         self._log_operation(payload, headers)
         return payload
 
-    def count_by(self, tables: list[dict[str, Any]], group_by: str) -> dict[str, Any]:
-        gcol, _, headers = self._resolve_columns(tables, group_by, None)
+    def count_by(self, tables: list[dict[str, Any]], group_by: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        gcol, _, headers = self._resolve_columns(tables, group_by, None, intent, semantic_schema)
         grouped: dict[str, int] = defaultdict(int)
         rows_processed = 0
         ignored_rows = 0
@@ -110,8 +112,8 @@ class TableAnalysisEngine:
         self._log_operation(payload, headers)
         return payload
 
-    def average(self, tables: list[dict[str, Any]], group_by: str, value_column: str) -> dict[str, Any]:
-        gcol, vcol, headers = self._resolve_columns(tables, group_by, value_column)
+    def average(self, tables: list[dict[str, Any]], group_by: str, value_column: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        gcol, vcol, headers = self._resolve_columns(tables, group_by, value_column, intent, semantic_schema)
         sums: dict[str, float] = defaultdict(float)
         counts: dict[str, int] = defaultdict(int)
         rows_processed = 0
@@ -142,9 +144,11 @@ class TableAnalysisEngine:
         self._log_operation(payload, headers)
         return payload
 
-    def weighted_average(self, tables: list[dict[str, Any]], group_by: str, numerator_column: str, denominator_column: str) -> dict[str, Any]:
-        gcol, ncol, headers = self._resolve_columns(tables, group_by, numerator_column)
+    def weighted_average(self, tables: list[dict[str, Any]], group_by: str, numerator_column: str, denominator_column: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        gcol, ncol, headers = self._resolve_columns(tables, group_by, numerator_column, intent, semantic_schema)
         dcol = self.find_column(headers, denominator_column)
+        if not dcol and semantic_schema and intent and intent.get("denominator_semantic"):
+            dcol = self._find_column_by_semantic(semantic_schema, str(intent.get("denominator_semantic")))
         if not dcol:
             raise ValueError(f"No se encontró la columna solicitada: {denominator_column}")
         numerator: dict[str, float] = defaultdict(float)
@@ -202,10 +206,17 @@ class TableAnalysisEngine:
             return partial_matches[0]
         return None
 
-    def _resolve_columns(self, tables: list[dict[str, Any]], group_by: str | None, value_column: str | None) -> tuple[str | None, str | None, list[str]]:
+    def _resolve_columns(self, tables: list[dict[str, Any]], group_by: str | None, value_column: str | None, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> tuple[str | None, str | None, list[str]]:
         headers = self._collect_headers(tables)
         resolved_group = self.find_column(headers, group_by) if group_by else None
         resolved_value = self.find_column(headers, value_column) if value_column else None
+        if semantic_schema and intent:
+            if not resolved_group and intent.get("group_by_semantic"):
+                resolved_group = self._find_column_by_semantic(semantic_schema, str(intent.get("group_by_semantic")))
+            if not resolved_value and intent.get("value_semantic"):
+                resolved_value = self._find_column_by_semantic(semantic_schema, str(intent.get("value_semantic")))
+            if not resolved_value and intent.get("numerator_semantic"):
+                resolved_value = self._find_column_by_semantic(semantic_schema, str(intent.get("numerator_semantic")))
         if group_by and not resolved_group:
             raise ValueError(f"No se encontró la columna solicitada: {group_by}")
         if value_column and not resolved_value:
@@ -257,3 +268,18 @@ class TableAnalysisEngine:
             payload.get("groups", 0),
             len(headers),
         )
+
+
+    def _find_column_by_semantic(self, semantic_schema: dict[str, Any], semantic_type: str, min_confidence: float = 0.60) -> str | None:
+        best_col: str | None = None
+        best_conf = 0.0
+        for table in semantic_schema.get("tables", []):
+            for col, meta in table.get("columns", {}).items():
+                if meta.get("semantic_type") == semantic_type:
+                    conf = float(meta.get("confidence", 0.0))
+                    if conf > best_conf:
+                        best_conf = conf
+                        best_col = col
+        if best_col and best_conf >= min_confidence:
+            return best_col
+        return None
