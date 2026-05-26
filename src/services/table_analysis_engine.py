@@ -11,14 +11,14 @@ class TableAnalysisEngine:
     def run_analysis(self, tables: list[dict[str, Any]], intent: dict[str, Any], semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
         operation = intent.get("operation")
         if operation == "aggregate_sum":
-            return self.aggregate_sum(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
-        if operation == "total_sum":
-            return self.total_sum(tables, str(intent.get("value_column", "")), intent, semantic_schema)
-        if operation == "count_by":
-            return self.count_by(tables, str(intent.get("group_by", "")), intent, semantic_schema)
-        if operation == "average":
-            return self.average(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
-        if operation == "weighted_average":
+            result = self.aggregate_sum(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
+        elif operation == "total_sum":
+            result = self.total_sum(tables, str(intent.get("value_column", "")), intent, semantic_schema)
+        elif operation == "count_by":
+            result = self.count_by(tables, str(intent.get("group_by", "")), intent, semantic_schema)
+        elif operation == "average":
+            result = self.average(tables, str(intent.get("group_by", "")), str(intent.get("value_column", "")), intent, semantic_schema)
+        elif operation == "weighted_average":
             result = self.weighted_average(
                 tables,
                 str(intent.get("group_by", "")),
@@ -27,10 +27,12 @@ class TableAnalysisEngine:
                 intent,
                 semantic_schema,
             )
-            if intent.get("top_n"):
-                return self.top_n(result, int(intent.get("top_n", 10)))
-            return result
-        raise ValueError(f"Operación no soportada: {operation}")
+        else:
+            raise ValueError(f"Operación no soportada: {operation}")
+
+        if intent.get("top_n"):
+            result = self.top_n(result, int(intent.get("top_n", 10)))
+        return result
 
     def aggregate_sum(self, tables: list[dict[str, Any]], group_by: str, value_column: str, intent: dict[str, Any] | None = None, semantic_schema: dict[str, Any] | None = None) -> dict[str, Any]:
         gcol, vcol, headers = self._resolve_columns(tables, group_by, value_column, intent, semantic_schema)
