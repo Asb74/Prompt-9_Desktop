@@ -73,6 +73,7 @@ class MainWindow:
         self.cancel_event = threading.Event()
         self.status_text = tk.StringVar(value="Listo")
         self.pending_table_intent: dict | None = None
+        self.pending_table_clarification: dict | None = None
 
         self._configure_root()
         self._build_layout()
@@ -601,11 +602,17 @@ class MainWindow:
                 len(used_attachments),
             )
         intent = self.query_intent_detector.detect(user_message)
+        intent = self._resolve_pending_table_intent(user_message, intent)
         tabular_risk = self._has_tabular_risk(user_message) and self._has_recent_tabular_attachment(used_attachments)
         local_spreadsheet_context = self._build_local_spreadsheet_context(user_message, used_attachments)
+        if self.pending_table_clarification and local_spreadsheet_context:
+            clarification_message = str(local_spreadsheet_context)
+            self.update_partial_message(clarification_message)
+            self._on_worker_success(clarification_message)
+            return
         if tabular_risk and not intent:
             self.logger.warning("Bloqueo anti-alucinación: riesgo_tabular=true intent_detectado=false mensaje=%s", user_message)
-            clarification = "La pregunta parece tabular, pero no sé si quieres contar entregas, sumar kilos o sumar importe."
+            clarification = "¿Quieres contar entregas, sumar kilos o sumar importe?"
             self.update_partial_message(clarification)
             self._on_worker_success(clarification)
             return
@@ -644,6 +651,8 @@ class MainWindow:
         intent = self._resolve_pending_table_intent(user_message, intent)
         if not intent:
             return ""
+        if intent.get("type") == "table_clarification_prompt":
+            return str(intent.get("message", ""))
 
         table_attachments = [
             a for a in attachments if a.get("extension", "").lower() in {".xlsx", ".xls", ".csv"}
@@ -672,6 +681,7 @@ class MainWindow:
             self._set_status("Calculando resultados...")
             result = self.table_analysis_engine.run_analysis(tables, intent, semantic_schema=semantic_schema)
             self.pending_table_intent = None
+            self.pending_table_clarification = None
             unique_groups = [r.get("group") for r in result.get("result", []) if r.get("group") not in {None, ""}]
             self.logger.info("Table analysis intent_detectado=%s", intent)
             self.logger.info("Table analysis operacion_ejecutada=%s columnas_usadas=%s top_n_aplicado=%s", result.get("operation"), {"group_by": result.get("group_by"), "value_column": result.get("value_column") or result.get("numerator_column")}, result.get("top_n"))
@@ -681,7 +691,7 @@ class MainWindow:
                 possible_more_blocks = any(int(sheet.get("blocks_detected", 0)) > 1 for sheet in debug_info.get("sheets", [])) or len(debug_info.get("sheets_found", [])) > 1
                 if possible_more_blocks:
                     self.logger.warning("Solo se detectó una variedad con múltiples bloques/hojas. log=%s", debug_info.get("log_path", ""))
-                    return "Resultado tabular calculado localmente (determinista):\nERROR: El lector tabular solo ha detectado una variedad. Revisa logs/table_debug_*.json."
+                    return "No he podido leer correctamente todas las variedades del archivo. ¿Quieres que lo revisemos con otra columna o con otro archivo?"
             self.logger.info("Table analysis: operacion_ejecutada=%s", intent.get("operation"))
             self._set_status("Generando respuesta...")
             lines = [
@@ -693,10 +703,11 @@ class MainWindow:
         except ValueError as exc:
             pending = self._build_pending_clarification(intent, str(exc))
             if pending:
-                self.pending_table_intent = pending
-                return "Resultado tabular calculado localmente (determinista):\nERROR: No puedo resolver 'producto' automáticamente. ¿Quieres agrupar por Cultivo o por Variedad?"
+                self.pending_table_clarification = pending
+                self.logger.info("Intent pendiente creado: %s", pending)
+                return "Cuando dices “producto”, puedo interpretarlo como Cultivo o como Variedad. ¿Quieres que agrupe por Cultivo o por Variedad?"
             self.logger.warning("Error de columnas en análisis tabular: %s", exc)
-            return f"Resultado tabular calculado localmente (determinista):\nERROR: {exc}"
+            return f"No pude completar el cálculo con esa tabla. Detalle técnico en logs: {exc}"
         except Exception:
             self.logger.exception("Error en motor genérico de análisis tabular")
             return ""
@@ -722,26 +733,32 @@ class MainWindow:
             if not candidates or candidates[0][1] < 0.60 or (len(candidates) > 1 and abs(candidates[0][1]-candidates[1][1]) < 0.05):
                 top = ", ".join([f"{c[0]} ({c[1]:.2f})" for c in candidates[:3]]) or "sin candidatos"
                 self.logger.warning("Baja confianza semántica semantic=%s candidates=%s", semantic, candidates[:3])
-                return f"Resultado tabular calculado localmente (determinista):\nERROR: No estoy seguro de qué columna representa '{semantic}' para {label}. Columnas candidatas: {top}."
+                readable = ", ".join([c[0] for c in candidates[:3]]) or "sin opciones claras"
+                return f"No tengo claro qué columna usar para {label}. Veo estas opciones: {readable}. ¿Cuál quieres usar?"
         return ""
 
     def _resolve_pending_table_intent(self, user_message: str, detected_intent: dict | None) -> dict | None:
         if detected_intent and detected_intent.get("type") == "table_analysis":
             if any(x in self._normalize_for_match(user_message) for x in ["kilos por producto", "kg por producto", "neto por producto"]):
-                self.pending_table_intent = {
+                self.pending_table_clarification = {
                     "type": "table_analysis",
                     "operation": "aggregate_sum",
                     "value_column": "Neto",
                     "value_semantic": "weight_kg",
                     "group_by_pending": "producto",
+                    "ambiguous_field": "producto",
+                    "options": ["Cultivo", "Variedad"],
                 }
+                self.logger.info("Intent pendiente creado: %s", self.pending_table_clarification)
             return detected_intent
 
-        if not self.pending_table_intent:
+        if not self.pending_table_clarification:
             return detected_intent
 
         normalized = self._normalize_for_match(user_message)
         if normalized in {"variedad", "por variedad"}:
+            self.logger.info("Aclaración resuelta: opcion_elegida=variedad")
+            self.pending_table_clarification = None
             resolved = {
                 "type": "table_analysis",
                 "operation": "aggregate_sum",
@@ -752,6 +769,8 @@ class MainWindow:
             }
             return resolved
         if normalized in {"cultivo", "por cultivo"}:
+            self.logger.info("Aclaración resuelta: opcion_elegida=cultivo")
+            self.pending_table_clarification = None
             resolved = {
                 "type": "table_analysis",
                 "operation": "aggregate_sum",
@@ -761,6 +780,12 @@ class MainWindow:
                 "value_semantic": "weight_kg",
             }
             return resolved
+        if any(x in normalized for x in {"sumar kg", "sumar kilos", "kilos", "kg"}):
+            self.logger.info("Aclaración pendiente sigue activa: falta dimensión producto")
+            return {
+                "type": "table_clarification_prompt",
+                "message": "Perfecto, para continuar necesito la dimensión: ¿quieres agrupar por Cultivo o por Variedad?",
+            }
         return detected_intent
 
     def _build_pending_clarification(self, intent: dict | None, error_message: str) -> dict | None:
@@ -775,6 +800,8 @@ class MainWindow:
             "value_column": intent.get("value_column", "Neto"),
             "value_semantic": intent.get("value_semantic", "weight_kg"),
             "group_by_pending": "producto",
+            "ambiguous_field": "producto",
+            "options": ["Cultivo", "Variedad"],
         }
 
     def _normalize_for_match(self, text: str) -> str:
