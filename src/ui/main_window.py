@@ -644,6 +644,7 @@ class MainWindow:
 
         try:
             self._set_status("Analizando tabla...")
+            debug_info = self.table_loader.debug_table_scan(str(stored_path))
             tables = self.table_loader.load_tables(str(stored_path))
             if not tables:
                 return ""
@@ -664,8 +665,10 @@ class MainWindow:
             self.logger.info("Table analysis columnas: group_by=%s value=%s filas_procesadas=%s total=%s", result.get("group_by"), result.get("value_column") or result.get("numerator_column"), result.get("rows_processed"), result.get("total"))
             self.logger.info("Table analysis variedades_encontradas=%s detalle=%s", len(unique_groups), unique_groups)
             if intent.get("operation") == "aggregate_sum" and (str(result.get("group_by", "")).lower().startswith("variedad") or str(intent.get("group_by_semantic", "")) == "variety") and len(unique_groups) == 1:
-                self.logger.warning("Solo se detectó una variedad. Se devuelve error técnico controlado para evitar cálculo parcial.")
-                return "Resultado tabular calculado localmente (determinista):\nERROR: Solo se ha detectado una variedad en el bloque leído. Es posible que el Excel tenga varias tablas o cabeceras repetidas. Revisa el lector tabular."
+                possible_more_blocks = any(int(sheet.get("blocks_detected", 0)) > 1 for sheet in debug_info.get("sheets", [])) or len(debug_info.get("sheets_found", [])) > 1
+                if possible_more_blocks:
+                    self.logger.warning("Solo se detectó una variedad con múltiples bloques/hojas. log=%s", debug_info.get("log_path", ""))
+                    return "Resultado tabular calculado localmente (determinista):\nERROR: El lector tabular solo ha detectado una variedad. Revisa logs/table_debug_*.json."
             if intent.get("top_n"):
                 result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
 

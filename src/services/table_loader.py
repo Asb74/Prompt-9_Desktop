@@ -1,4 +1,5 @@
 import csv
+import json
 import logging
 from datetime import date, datetime, time
 from pathlib import Path
@@ -30,6 +31,57 @@ class TableLoader:
             return self._load_csv(path)
 
         raise ValueError(f"Formato tabular no soportado: {extension}")
+
+    def debug_table_scan(self, path: str) -> dict[str, Any]:
+        extension = Path(path).suffix.lower()
+        sheets: list[dict[str, Any]] = []
+        all_varieties: set[str] = set()
+        totals_by_variety: dict[str, float] = {}
+        total_neto_general = 0.0
+
+        for sheet_name, raw_rows in self._read_raw_sheets(path, extension):
+            blocks = self._detect_blocks(raw_rows)
+            sheet_varieties: set[str] = set()
+            sheet_debug_blocks: list[dict[str, Any]] = []
+            for block in blocks:
+                block_totals = self._sum_by_variety(block.get("rows", []), block.get("headers", []))
+                sheet_varieties.update(block_totals.keys())
+                all_varieties.update(block_totals.keys())
+                for variety, value in block_totals.items():
+                    totals_by_variety[variety] = totals_by_variety.get(variety, 0.0) + value
+                    total_neto_general += value
+                header_row = int(block.get("header_row_index", 0))
+                sheet_debug_blocks.append(
+                    {
+                        "row_range": [header_row + 1, header_row + len(block.get("rows", [])) + 1],
+                        "columns": block.get("headers", []),
+                        "rows": len(block.get("rows", [])),
+                    }
+                )
+
+            sheets.append(
+                {
+                    "sheet_name": sheet_name,
+                    "total_rows": len(raw_rows),
+                    "non_empty_rows": sum(1 for row in raw_rows if self._row_has_content(row)),
+                    "detected_headers": [block.get("headers", []) for block in blocks],
+                    "blocks_detected": len(blocks),
+                    "blocks": sheet_debug_blocks,
+                    "unique_varieties": sorted(sheet_varieties),
+                }
+            )
+
+        summary = {
+            "path": str(path),
+            "sheets_found": [sheet["sheet_name"] for sheet in sheets],
+            "sheet_count": len(sheets),
+            "sheets": sheets,
+            "unique_varieties": sorted(all_varieties),
+            "total_neto_by_variety": dict(sorted(totals_by_variety.items())),
+            "total_neto_general": total_neto_general,
+        }
+        summary["log_path"] = self._write_debug_log(summary)
+        return summary
 
     def detect_header_row(self, rows: list[list[Any]]) -> int:
         best_idx: int | None = None
@@ -118,6 +170,35 @@ class TableLoader:
 
         self.logger.info("TableLoader xlsx: hojas_leidas=%s", len(tables))
         return tables
+
+    def _read_raw_sheets(self, path: str, extension: str) -> list[tuple[str, list[list[Any]]]]:
+        if extension == ".xlsx":
+            workbook = load_workbook(path, read_only=True, data_only=True)
+            return [
+                (sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)])
+                for sheet in workbook.worksheets
+                if sheet.sheet_state == "visible"
+            ]
+        if extension == ".xls":
+            if xlrd is None:
+                raise RuntimeError("xlrd no está instalado para procesar .xls")
+            workbook = xlrd.open_workbook(path, on_demand=True)
+            return [(sheet.name, [sheet.row_values(row_idx) for row_idx in range(sheet.nrows)]) for sheet in workbook.sheets()]
+        if extension == ".csv":
+            parsed_rows: list[list[Any]] | None = None
+            for encoding in ("utf-8-sig", "latin-1"):
+                for forced_delimiter in (None, ";", ","):
+                    try:
+                        parsed_rows = self._read_csv(path, encoding, forced_delimiter)
+                        break
+                    except Exception:
+                        continue
+                if parsed_rows is not None:
+                    break
+            if parsed_rows is None:
+                raise ValueError(f"No se pudo leer el CSV: {path}")
+            return [("CSV", parsed_rows)]
+        raise ValueError(f"Formato tabular no soportado: {extension}")
 
     def _load_xls(self, path: str) -> list[dict[str, Any]]:
         if xlrd is None:
@@ -322,6 +403,35 @@ class TableLoader:
             if isinstance(value, (int, float)):
                 total += float(value)
         return total
+
+    def _sum_by_variety(self, rows: list[dict[str, Any]], headers: list[str]) -> dict[str, float]:
+        variety_key = None
+        neto_key = None
+        for header in headers:
+            norm = self._normalize_header_token(header)
+            if norm == "variedad":
+                variety_key = header
+            if norm == "neto":
+                neto_key = header
+        if not variety_key or not neto_key:
+            return {}
+        grouped: dict[str, float] = {}
+        for row in rows:
+            variety = str(row.get(variety_key, "")).strip().upper()
+            value = row.get(neto_key)
+            if not variety or not isinstance(value, (int, float)):
+                continue
+            grouped[variety] = grouped.get(variety, 0.0) + float(value)
+        return grouped
+
+    def _write_debug_log(self, summary: dict[str, Any]) -> str:
+        logs_dir = Path("logs")
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        target = logs_dir / f"table_debug_{timestamp}.json"
+        with target.open("w", encoding="utf-8") as file:
+            json.dump(summary, file, ensure_ascii=False, indent=2)
+        return str(target)
 
     def _normalize_header_token(self, value: str) -> str:
         return "".join(ch.lower() for ch in value.strip() if ch.isalnum())
