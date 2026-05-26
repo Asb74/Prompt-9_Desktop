@@ -663,8 +663,9 @@ class MainWindow:
             unique_groups = [r.get("group") for r in result.get("result", []) if r.get("group") not in {None, ""}]
             self.logger.info("Table analysis columnas: group_by=%s value=%s filas_procesadas=%s total=%s", result.get("group_by"), result.get("value_column") or result.get("numerator_column"), result.get("rows_processed"), result.get("total"))
             self.logger.info("Table analysis variedades_encontradas=%s detalle=%s", len(unique_groups), unique_groups)
-            if len(unique_groups) == 1:
-                self.logger.warning("Solo se detectó una variedad. Verificar cabecera/rango/hojas.")
+            if intent.get("operation") == "aggregate_sum" and (str(result.get("group_by", "")).lower().startswith("variedad") or str(intent.get("group_by_semantic", "")) == "variety") and len(unique_groups) == 1:
+                self.logger.warning("Solo se detectó una variedad. Se devuelve error técnico controlado para evitar cálculo parcial.")
+                return "Resultado tabular calculado localmente (determinista):\nERROR: Solo se ha detectado una variedad en el bloque leído. Es posible que el Excel tenga varias tablas o cabeceras repetidas. Revisa el lector tabular."
             if intent.get("top_n"):
                 result = self.table_analysis_engine.top_n(result, int(intent.get("top_n", 10)))
 
