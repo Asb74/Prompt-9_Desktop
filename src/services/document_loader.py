@@ -1,11 +1,10 @@
-import csv
 import logging
 from pathlib import Path
 
 from docx import Document
 from pypdf import PdfReader
 
-from src.services.spreadsheet_analyzer import SpreadsheetAnalyzer
+from src.services.table_loader import TableLoader
 
 
 class DocumentLoader:
@@ -16,7 +15,7 @@ class DocumentLoader:
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
-        self.spreadsheet_analyzer = SpreadsheetAnalyzer()
+        self.table_loader = TableLoader()
 
     def extract_text(self, path: str) -> str:
         file_path = Path(path)
@@ -47,16 +46,12 @@ class DocumentLoader:
         return ""
 
     def _extract_csv(self, file_path: Path) -> str:
-        rows: list[str] = []
-        with file_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
-            reader = csv.reader(f)
-            for i, row in enumerate(reader):
-                if i >= self.CSV_MAX_ROWS:
-                    break
-                rows.append("\t".join(str(cell) for cell in row))
-                if sum(len(x) for x in rows) >= self.INTERMEDIATE_CHAR_LIMIT:
-                    break
-        return "\n".join(rows)
+        tables = self.table_loader.load_tables(str(file_path))
+        if not tables:
+            return ""
+
+        preview = self.table_loader.table_to_preview_text(tables[0], max_rows=self.CSV_MAX_ROWS)
+        return preview[: self.INTERMEDIATE_CHAR_LIMIT]
 
     def _extract_pdf(self, file_path: Path) -> str:
         reader = PdfReader(str(file_path))
@@ -113,20 +108,13 @@ class DocumentLoader:
         return None
 
     def _extract_spreadsheet(self, file_path: Path) -> str:
-        tables = self.spreadsheet_analyzer.load_workbook_tables(str(file_path))
+        tables = self.table_loader.load_tables(str(file_path))
         parts: list[str] = []
+
         for table in tables:
-            parts.append(f"[Hoja: {table['sheet']}]")
-            parts.append("Columnas detectadas:")
-            parts.append(" | ".join(str(col) for col in table["headers"]))
-            parts.append("")
-            parts.append("Filas:")
-            for row in table["rows"][: self.XLSX_MAX_ROWS_PER_SHEET]:
-                pairs = [f"{header}={row.get(header, '')}" for header in table["headers"]]
-                parts.append(" | ".join(pairs))
-                if sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
-                    break
+            parts.append(self.table_loader.table_to_preview_text(table, max_rows=self.XLSX_MAX_ROWS_PER_SHEET))
             parts.append("")
             if sum(len(x) for x in parts) >= self.INTERMEDIATE_CHAR_LIMIT:
                 break
-        return "\n".join(parts)
+
+        return "\n".join(parts)[: self.INTERMEDIATE_CHAR_LIMIT]
